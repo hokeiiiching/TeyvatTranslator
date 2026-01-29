@@ -29,10 +29,10 @@ _marian_ready = False
 try:
     from transformers import MarianMTModel, MarianTokenizer
     MARIAN_AVAILABLE = True
-    logger.info("✓ MarianMT (transformers) available")
+    logger.info("MarianMT (transformers) available")
 except ImportError as e:
     MARIAN_ERROR = str(e)
-    logger.warning(f"⚠ MarianMT not available: {e}")
+    logger.warning(f"MarianMT not available: {e}")
 
 # Google Translate fallback
 try:
@@ -40,7 +40,7 @@ try:
     GOOGLE_AVAILABLE = True
 except ImportError:
     GOOGLE_AVAILABLE = False
-    logger.warning("⚠ Google Translate not available")
+    logger.warning("Google Translate not available")
 
 
 MODEL_NAME = "Helsinki-NLP/opus-mt-zh-en"
@@ -55,7 +55,7 @@ def _init_marian_sync():
         return
     
     try:
-        logger.info(f"🔄 Loading MarianMT model: {MODEL_NAME}")
+        logger.info(f"Loading MarianMT model: {MODEL_NAME}")
         
         _tokenizer = MarianTokenizer.from_pretrained(MODEL_NAME)
         _model = MarianMTModel.from_pretrained(MODEL_NAME)
@@ -65,28 +65,28 @@ def _init_marian_sync():
             import torch
             if torch.cuda.is_available():
                 _model = _model.cuda()
-                logger.info("🎮 MarianMT using GPU acceleration")
+                logger.info("MarianMT using GPU acceleration")
             else:
-                logger.info("💻 MarianMT using CPU")
+                logger.info("MarianMT using CPU")
         except Exception:
             pass
         
         # Warmup pass - do directly to avoid threading issues
-        logger.info("🔥 Warming up MarianMT...")
+        logger.info("Warming up MarianMT...")
         try:
             warmup_inputs = _tokenizer("测试", return_tensors="pt", padding=True, truncation=True)
             if next(_model.parameters()).is_cuda:
                 warmup_inputs = {k: v.cuda() for k, v in warmup_inputs.items()}
             _ = _model.generate(**warmup_inputs, max_length=50)
-            logger.info("✓ MarianMT warmup complete")
+            logger.info("MarianMT warmup complete")
         except Exception as warmup_err:
-            logger.warning(f"⚠ Warmup failed (non-critical): {warmup_err}")
+            logger.warning(f"Warmup failed (non-critical): {warmup_err}")
         
         _marian_ready = True
-        logger.info("✓ MarianMT ready")
+        logger.info("MarianMT ready")
         
     except Exception as e:
-        logger.error(f"❌ MarianMT init failed: {e}")
+        logger.error(f"MarianMT init failed: {e}")
 
 
 def preload_translator():
@@ -104,7 +104,7 @@ def preload_translator():
     
     _init_thread = Thread(target=_init_marian_sync, daemon=True)
     _init_thread.start()
-    logger.info("⏳ MarianMT background initialization started")
+    logger.info("MarianMT background initialization started")
 
 
 def _get_marian():
@@ -116,7 +116,7 @@ def _get_marian():
     
     # Wait for background init if in progress
     if _init_thread is not None and _init_thread.is_alive():
-        logger.info("⏳ Waiting for MarianMT init...")
+        logger.info("Waiting for MarianMT init...")
         _init_thread.join()
     
     if _model is not None:

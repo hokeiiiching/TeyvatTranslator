@@ -29,7 +29,7 @@ class ContextEngine:
         """Initialize the context engine with vocabulary data."""
         self.vocabulary = VOCABULARY
         self.index = self._build_index()
-        print(f"✓ Context engine loaded: {len(self.vocabulary)} terms")
+        print(f"Context engine loaded: {len(self.vocabulary)} terms")
         
     def _build_index(self) -> Dict[str, Dict[str, Any]]:
         """

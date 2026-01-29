@@ -2,15 +2,29 @@
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![PyQt6](https://img.shields.io/badge/PyQt6-41CD52?style=for-the-badge&logo=qt&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
 
 **Learn Mandarin through Genshin Impact**
 
-Real-time OCR translation overlay for Genshin Impact with vocabulary learning features.
+Real-time translation overlay with pinyin and vocabulary learning.
 
 </div>
+
+---
+
+## ⬇️ Download
+
+**[📥 Download TeyvatTranslator (Windows)](https://github.com/hokeiiiching/TeyvatTranslator/releases/latest)**
+
+### How to Use
+
+1. **Download** the ZIP file from the link above
+2. **Extract** to any folder
+3. **Run** `TeyvatTranslator.exe`
+4. Select the Genshin Impact window and click **Start Translation**
+
+> First launch downloads translation models (~300MB). This only happens once.
 
 ---
 
@@ -19,12 +33,22 @@ Real-time OCR translation overlay for Genshin Impact with vocabulary learning fe
 - 🖥️ **Live Translation** — Real-time OCR of game dialogue
 - 📖 **Pinyin Display** — See pronunciation for every character
 - 🎮 **Genshin Vocabulary** — 700+ game-specific terms with context
-- 🔄 **Offline Mode** — MarianMT local translation (GPU optional)
-- 🌐 **Google Fallback** — Auto-fallback when offline model unavailable
+- 🔄 **Offline Mode** — Works offline after first download
+- 🌐 **Auto Fallback** — Falls back to Google Translate if needed
 
 ---
 
-## Quick Start
+## Requirements
+
+- Windows 10/11
+- ~1.5GB disk space
+
+---
+
+## For Developers
+
+<details>
+<summary>Run from source</summary>
 
 ```bash
 # Install dependencies
@@ -34,24 +58,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-**First run downloads ~300MB translation model.**
-
----
-
-## Usage
-
-1. Launch the app
-2. Select game window or draw a screen region
-3. Click **Start Translation**
-4. Play the game — translations appear in the overlay
-
----
-
-## Requirements
-
-- Windows 10/11
-- Python 3.10+
-- ~1GB disk space (for models)
+</details>
 
 ---
 

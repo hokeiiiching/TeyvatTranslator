@@ -70,9 +70,9 @@ def load_stylesheet(app: QApplication) -> None:
     if os.path.exists(style_path):
         with open(style_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
-            print("✓ Stylesheet loaded successfully")
+            print("Stylesheet loaded successfully")
     else:
-        print("⚠ Stylesheet not found, using default theme")
+        print("Stylesheet not found, using default theme")
 
 
 def set_app_icon(app: QApplication) -> None:
@@ -119,7 +119,7 @@ def main() -> None:
     main_window.show()
     
     # Start the event loop
-    print("✓ Genshin Translator started")
+    print("Genshin Translator started")
     sys.exit(app.exec())
 
 

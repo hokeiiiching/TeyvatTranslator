@@ -17,21 +17,21 @@ CONTEXTS: Dict[str, ContextDefinition] = {
         label='Combat',
         description='Fighting enemies, using abilities, exploring',
         recommended_tags=['combat', 'enemy', 'mechanic'],
-        icon='⚔️'
+        icon=''
     ),
     'story': ContextDefinition(
         id='story',
         label='Story',
         description='Quests, dialogues, cutscenes',
         recommended_tags=['dialogue', 'character', 'location'],
-        icon='📖'
+        icon=''
     ),
     'menu': ContextDefinition(
         id='menu',
         label='Menu',
         description='Inventory, character builds, settings',
         recommended_tags=['ui', 'item'],
-        icon='📋'
+        icon=''
     ),
 }
 
@@ -44,7 +44,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='通用',
         pinyin='tōng yòng',
         description='Terms used across all of Teyvat',
-        icon='🌍'
+        icon=''
     ),
     'mondstadt': RegionDefinition(
         id='mondstadt',
@@ -52,7 +52,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='蒙德',
         pinyin='Méng dé',
         description='City of Freedom, European-inspired',
-        icon='🍃'
+        icon=''
     ),
     'liyue': RegionDefinition(
         id='liyue',
@@ -60,7 +60,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='璃月',
         pinyin='Lí yuè',
         description='Harbor of Stone and Contracts, Chinese-inspired',
-        icon='⛰️'
+        icon=''
     ),
     'inazuma': RegionDefinition(
         id='inazuma',
@@ -68,7 +68,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='稻妻',
         pinyin='Dào qī',
         description='Nation of Eternity, Japanese-inspired',
-        icon='⚡'
+        icon=''
     ),
     'sumeru': RegionDefinition(
         id='sumeru',
@@ -76,7 +76,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='须弥',
         pinyin='Xū mí',
         description='Nation of Wisdom, Middle Eastern/South Asian-inspired',
-        icon='🌿'
+        icon=''
     ),
     'fontaine': RegionDefinition(
         id='fontaine',
@@ -84,7 +84,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='枫丹',
         pinyin='Fēng dān',
         description='Nation of Justice, French-inspired',
-        icon='💧'
+        icon=''
     ),
     'natlan': RegionDefinition(
         id='natlan',
@@ -92,7 +92,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='纳塔',
         pinyin='Nà tǎ',
         description='Nation of War, Latin American-inspired',
-        icon='🔥'
+        icon=''
     ),
     'snezhnaya': RegionDefinition(
         id='snezhnaya',
@@ -100,7 +100,7 @@ REGIONS: Dict[str, RegionDefinition] = {
         chinese_name='至冬',
         pinyin='Zhì dōng',
         description='Nation of the Tsaritsa, Russian-inspired',
-        icon='❄️'
+        icon=''
     ),
 }
 

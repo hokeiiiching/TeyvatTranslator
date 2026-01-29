@@ -57,7 +57,12 @@ htmlcov/
 .mypy_cache/
 
 # Build artifacts
-*.spec
+debug_output/
+
+# Translation cache (user-specific)
+*.db-shm
+*.db-wal
+translation_cache*
 
 # Misc
 *.bak

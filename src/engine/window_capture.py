@@ -21,7 +21,7 @@ try:
     HAS_WIN32 = True
 except ImportError:
     HAS_WIN32 = False
-    print("⚠ pywin32 not available, window capture disabled")
+    print("pywin32 not available, window capture disabled")
 
 
 def get_window_list() -> List[Dict[str, any]]:
@@ -87,7 +87,7 @@ def find_genshin_window() -> Optional[Dict]:
         title_lower = window['title'].lower()
         for keyword in genshin_keywords:
             if keyword in title_lower:
-                print(f"✓ Found Genshin window: '{window['title']}'")
+                print(f"Found Genshin window: '{window['title']}'")
                 return window
     
     return None
@@ -177,7 +177,7 @@ def capture_window_dialogue(hwnd: int) -> Optional[np.ndarray]:
         return img_np
         
     except Exception as e:
-        print(f"⚠ Dialogue capture error: {e}")
+        print(f"Dialogue capture error: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -256,7 +256,7 @@ def capture_window(hwnd: int, region: Optional[Tuple[int, int, int, int]] = None
         return img
         
     except Exception as e:
-        print(f"⚠ Window capture error: {e}")
+        print(f"Window capture error: {e}")
         return None
 
 

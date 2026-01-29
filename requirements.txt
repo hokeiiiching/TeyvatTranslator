@@ -10,11 +10,8 @@ google-generativeai>=0.3.0
 pyperclip>=1.8.2
 pywin32>=306
 
-# OCR Engine - GPU version (default, requires NVIDIA GPU + CUDA)
-# Install with: pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
-# 
-# For CPU-only systems (no NVIDIA GPU), install paddlepaddle instead:
-#   pip install paddlepaddle
+# OCR Engine
+paddlepaddle>=2.5.0
 paddleocr>=2.7.0
 
 pypinyin>=0.50.0

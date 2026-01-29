@@ -91,14 +91,14 @@ class OCRDiagnostic:
     def get_summary(self) -> str:
         """Get human-readable summary."""
         if not self.problems:
-            return "✅ No problems detected"
+            return "No problems detected"
         
-        lines = [f"⚠️ {len(self.problems)} problem(s) detected:"]
+        lines = [f"{len(self.problems)} problem(s) detected:"]
         for problem in self.problems:
             lines.append(f"  - {problem.value.replace('_', ' ').title()}")
         
         if self.suggestions:
-            lines.append("\n💡 Suggestions:")
+            lines.append("\nSuggestions:")
             for suggestion in self.suggestions:
                 lines.append(f"  - {suggestion}")
         
@@ -276,17 +276,17 @@ class OCRDiagnostics:
     def print_analysis(self, diagnostic: OCRDiagnostic) -> None:
         """Print diagnostic analysis to console."""
         print(f"\n{'='*60}")
-        print("  🔍 OCR DIAGNOSTIC ANALYSIS")
+        print("  OCR DIAGNOSTIC ANALYSIS")
         print(f"{'='*60}")
         
-        print(f"\n  📊 IMAGE STATISTICS:")
+        print(f"\n  IMAGE STATISTICS:")
         for key, value in diagnostic.stats.items():
             if isinstance(value, float):
                 print(f"     {key}: {value:.2f}")
             else:
                 print(f"     {key}: {value}")
         
-        print(f"\n  📈 CONFIDENCE: {diagnostic.confidence*100:.0f}%")
+        print(f"\n  CONFIDENCE: {diagnostic.confidence*100:.0f}%")
         
         print(f"\n  {diagnostic.get_summary()}")
         print(f"{'='*60}")

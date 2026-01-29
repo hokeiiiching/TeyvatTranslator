@@ -77,7 +77,7 @@ def init_database():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_cache_hash ON translation_cache(text_hash)')
         
         conn.commit()
-        print(f"✓ Database initialized: {DB_PATH}")
+        print(f"Database initialized: {DB_PATH}")
 
 
 def import_vocabulary_from_list(vocab_list: List[Dict[str, Any]]) -> int:
@@ -115,7 +115,7 @@ def import_vocabulary_from_list(vocab_list: List[Dict[str, Any]]) -> int:
                 ))
                 count += 1
             except Exception as e:
-                print(f"⚠ Failed to import term {term.get('id')}: {e}")
+                print(f"Failed to import term {term.get('id')}: {e}")
         
         conn.commit()
         return count

@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
                 self.window_combo.addItem(f"{title} ({w['size'][0]}x{w['size'][1]})")
                 
         except Exception as e:
-            print(f"⚠ Could not list windows: {e}")
+            print(f"Could not list windows: {e}")
             self._windows_cache = {}
     
     def _on_find_genshin(self) -> None:
@@ -297,7 +297,7 @@ class MainWindow(QMainWindow):
                 "Make sure the game is running and try again."
             )
         except Exception as e:
-            print(f"⚠ Error finding Genshin: {e}")
+            print(f"Error finding Genshin: {e}")
         
     def _create_settings_tab(self) -> QWidget:
         """
@@ -575,7 +575,7 @@ class MainWindow(QMainWindow):
             hwnd = selected_window['hwnd']
             rect = selected_window['rect']
             
-            print(f"\n✓ Using WINDOW capture mode")
+            print(f"\nUsing WINDOW capture mode")
             print(f"  Window: {selected_window['title']}")
             print(f"  Handle: {hwnd}")
             print(f"  Size: {selected_window['size']}")
@@ -604,7 +604,7 @@ class MainWindow(QMainWindow):
             # Screen region capture mode
             x1, y1, x2, y2 = self.selected_region
             
-            print(f"\n✓ Using SCREEN REGION capture mode")
+            print(f"\nUsing SCREEN REGION capture mode")
             print(f"  Region: ({x1}, {y1}) to ({x2}, {y2})")
             
             self.ocr_worker = OCRWorker(
