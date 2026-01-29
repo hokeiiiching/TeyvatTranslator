@@ -2,10 +2,12 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
-![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
-
 **Learn Mandarin through Genshin Impact**
+
+I wanted to improve my mandarin and written (simplified chinese).
+I like playing Genshin Impact.
+
+So I built this.
 
 Real-time translation overlay with pinyin and vocabulary learning.
 
@@ -15,7 +17,7 @@ Real-time translation overlay with pinyin and vocabulary learning.
 
 ## ⬇️ Download
 
-**[📥 Download TeyvatTranslator (Windows)](https://github.com/hokeiiiching/TeyvatTranslator/releases/latest)**
+**[Download TeyvatTranslator (Windows)](https://github.com/hokeiiiching/TeyvatTranslator/releases/latest)**
 
 ### How to Use
 
@@ -24,17 +26,17 @@ Real-time translation overlay with pinyin and vocabulary learning.
 3. **Run** `TeyvatTranslator.exe`
 4. Select the Genshin Impact window and click **Start Translation**
 
-> First launch downloads translation models (~300MB). This only happens once.
+> First launch downloads translation models (~300MB) and may take a while. This only happens once.
 
 ---
 
 ## Features
 
-- 🖥️ **Live Translation** — Real-time OCR of game dialogue
-- 📖 **Pinyin Display** — See pronunciation for every character
-- 🎮 **Genshin Vocabulary** — 700+ game-specific terms with context
-- 🔄 **Offline Mode** — Works offline after first download
-- 🌐 **Auto Fallback** — Falls back to Google Translate if needed
+- **Live Translation** — Real-time OCR of game dialogue
+- **Pinyin Display** — See pronunciation for every character
+- **Genshin Vocabulary** — 700+ game-specific terms with context
+- **Offline Mode** — Works offline after first download
+- **Auto Fallback** — Falls back to Google Translate if needed
 
 ---
 
@@ -64,7 +66,7 @@ python main.py
 
 ## Disclaimer
 
-> This is an **UNOFFICIAL** fan-made application. Not affiliated with miHoYo/HoYoverse/COGNOSPHERE. "Genshin Impact" is a trademark of COGNOSPHERE PTE. LTD. For educational purposes only.
+> This is an **UNOFFICIAL** fan-made application. Not affiliated with HoYoverse/COGNOSPHERE. For educational purposes only.
 
 ---
 
