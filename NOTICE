@@ -1,0 +1,78 @@
+Genshin Translator - Third Party Notices
+=========================================
+
+This application uses the following open-source libraries:
+
+PyQt6
+-----
+Copyright (c) Riverbank Computing Limited
+License: GPL v3 / Commercial
+https://www.riverbankcomputing.com/software/pyqt/
+
+pytesseract
+-----------
+License: Apache License 2.0
+https://github.com/madmaze/pytesseract
+
+Pillow (PIL Fork)
+-----------------
+License: HPND License
+https://python-pillow.org/
+
+OpenCV (opencv-python)
+----------------------
+License: Apache License 2.0 / MIT License
+https://opencv.org/
+
+deep_translator
+---------------
+License: MIT License
+https://github.com/nidhaloff/deep-translator
+
+numpy
+-----
+License: BSD 3-Clause License
+https://numpy.org/
+
+pyttsx3
+-------
+License: Mozilla Public License 2.0
+https://github.com/nateshmbhat/pyttsx3
+
+pyperclip
+---------
+License: BSD 3-Clause License
+https://github.com/asweigart/pyperclip
+
+
+DISCLAIMER
+==========
+
+This is an UNOFFICIAL fan-made application and is NOT affiliated with, 
+endorsed by, sponsored by, or connected to miHoYo Co., Ltd., HoYoverse, 
+COGNOSPHERE PTE. LTD., or any of their subsidiaries or affiliates.
+
+"Genshin Impact" and related trademarks, logos, and character names are 
+the property of COGNOSPHERE PTE. LTD. and miHoYo Co., Ltd.
+
+This application is provided for EDUCATIONAL PURPOSES to help players 
+learn Mandarin Chinese. All game-related terminology is used under fair 
+use for educational commentary and language learning.
+
+
+FONT NOTICE
+===========
+
+This application is designed to use the "HYWenHei" font family for 
+authentic Genshin Impact styling. This font is the property of:
+
+  Beijing Hanyi Innovative Technology Co., Ltd. (汉仪字库)
+  https://www.hanyi.com.cn/
+
+Users must obtain their own license to use HYWenHei fonts. This 
+application does NOT bundle or distribute any copyrighted fonts.
+
+If HYWenHei is not installed, the application will fall back to:
+- Microsoft YaHei (Windows)
+- Segoe UI (Windows fallback)
+- System default sans-serif font

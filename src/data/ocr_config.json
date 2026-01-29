@@ -1,0 +1,15 @@
+{
+    "min_height_for_ocr": 40,
+    "max_scale_factor": 3.0,
+    "adaptive_block_size": 11,
+    "adaptive_c": 2,
+    "clahe_clip_limit": 2.0,
+    "clahe_grid_size": 8,
+    "gaussian_blur_kernel": 3,
+    "median_blur_kernel": 3,
+    "dilate_kernel_size": 2,
+    "dilate_iterations": 1,
+    "brightness_dark_threshold": 128,
+    "contrast_warning_threshold": 50,
+    "std_warning_threshold": 5.0
+}
