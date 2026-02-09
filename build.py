@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Build script for TeyvatTranslator
 Creates a standalone Windows executable using PyInstaller
@@ -18,7 +17,7 @@ from pathlib import Path
 
 # Build configuration
 APP_NAME = "TeyvatTranslator"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 BUILD_DIR = Path("build")
 DIST_DIR = Path("dist")
 SPEC_FILE = Path("TeyvatTranslator.spec")
@@ -93,10 +92,55 @@ def create_zip():
     return True
 
 
+def create_installer():
+    """Create Windows installer using Inno Setup."""
+    iss_file = Path("TeyvatTranslator.iss")
+    if not iss_file.exists():
+        print(f"Inno Setup script not found: {iss_file}")
+        return False
+    
+    # Check if Inno Setup is installed
+    iscc_paths = [
+        Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
+        Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+    ]
+    
+    iscc_exe = None
+    for path in iscc_paths:
+        if path.exists():
+            iscc_exe = path
+            break
+    
+    if not iscc_exe:
+        print("\n⚠️  Inno Setup not found!")
+        print("   Download from: https://jrsoftware.org/isdl.php")
+        print("   After installing, run this command again.")
+        return False
+    
+    # Convert icon from PNG to ICO if needed
+    icon_png = Path("assets/icon.png")
+    icon_ico = Path("assets/icon.ico")
+    if icon_png.exists() and not icon_ico.exists():
+        print("\n📷 Converting icon.png to icon.ico...")
+        try:
+            from PIL import Image
+            img = Image.open(icon_png)
+            # Create multiple sizes for better quality
+            img.save(icon_ico, format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
+            print(f"   Created: {icon_ico}")
+        except Exception as e:
+            print(f"   Warning: Could not convert icon: {e}")
+            print("   Installer will use default icon.")
+    
+    cmd = [str(iscc_exe), str(iss_file)]
+    return run_command(cmd, "Creating Windows installer with Inno Setup")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build TeyvatTranslator executable")
     parser.add_argument("--clean", action="store_true", help="Clean build artifacts first")
     parser.add_argument("--zip", action="store_true", help="Create distributable ZIP")
+    parser.add_argument("--installer", action="store_true", help="Create Windows installer (requires Inno Setup)")
     args = parser.parse_args()
     
     print(f"""
@@ -126,15 +170,36 @@ def main():
         if not create_zip():
             print("\nZIP creation failed, but executable was built")
     
-    print(f"""
+    # Create installer if requested
+    installer_created = False
+    if args.installer:
+        if create_installer():
+            installer_created = True
+        else:
+            print("\nInstaller creation failed, but executable was built")
+    
+    # Print completion message
+    if installer_created:
+        print(f"""
+╔══════════════════════════════════════════════════════════╗
+║                    BUILD COMPLETE!                       ║
+╠══════════════════════════════════════════════════════════╣
+║  Installer: dist/{APP_NAME}-v{VERSION}-Setup.exe         ║
+║                                                          ║
+║  To distribute:                                          ║
+║  Upload the Setup.exe to GitHub Releases                 ║
+╚══════════════════════════════════════════════════════════╝
+    """)
+    else:
+        print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║                    BUILD COMPLETE!                       ║
 ╠══════════════════════════════════════════════════════════╣
 ║  Executable: dist/{APP_NAME}/{APP_NAME}.exe       ║
 ║                                                          ║
 ║  To distribute:                                          ║
-║  1. Run: python build.py --zip                           ║
-║  2. Upload the ZIP to GitHub Releases                    ║
+║  1. Run: python build.py --installer                     ║
+║  2. Upload the Setup.exe to GitHub Releases              ║
 ╚══════════════════════════════════════════════════════════╝
     """)
 

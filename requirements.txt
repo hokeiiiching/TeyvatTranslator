@@ -21,4 +21,5 @@ chromadb>=0.4.0
 # MarianMT Translation Engine (local, offline capable)
 transformers>=4.35.0
 sentencepiece>=0.1.99
+sacremoses>=0.0.53
 torch>=2.0.0

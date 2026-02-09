@@ -21,9 +21,9 @@ Real-time translation overlay with pinyin and vocabulary learning.
 
 ### How to Use
 
-1. **Download** the ZIP file from the link above
-2. **Extract** to any folder
-3. **Run** `TeyvatTranslator.exe`
+1. **Download** `TeyvatTranslator-Setup.exe` from the link above
+2. **Run** the installer and follow the prompts
+3. **Launch** from Start Menu or Desktop shortcut
 4. Select the Genshin Impact window and click **Start Translation**
 
 > First launch downloads translation models (~300MB) and may take a while. This only happens once.
@@ -32,18 +32,18 @@ Real-time translation overlay with pinyin and vocabulary learning.
 
 ## Features
 
-- **Live Translation** — Real-time OCR of game dialogue
-- **Pinyin Display** — See pronunciation for every character
-- **Genshin Vocabulary** — 700+ game-specific terms with context
-- **Offline Mode** — Works offline after first download
-- **Auto Fallback** — Falls back to Google Translate if needed
+- **Live Translation**: Real-time OCR of game dialogue
+- **Pinyin Display**: See pronunciation for every character
+- **Genshin Vocabulary**: 700+ game-specific terms with context
+- **Offline Mode**: Works offline after first download
+- **Auto Fallback**: Falls back to Google Translate if needed
 
 ---
 
 ## Requirements
 
 - Windows 10/11
-- ~1.5GB disk space
+- ~2GB disk space (includes translation models)
 
 ---
 
@@ -59,6 +59,20 @@ pip install -r requirements.txt
 # Run
 python main.py
 ```
+
+</details>
+
+<details>
+<summary>Build installer for distribution</summary>
+
+Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) (free).
+
+```bash
+# Build executable + create installer
+python build.py --clean --installer
+```
+
+Output: `dist/TeyvatTranslator-v1.0.0-Setup.exe`
 
 </details>
 
