@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 OCR Worker Module
 
@@ -51,6 +50,16 @@ import sys as _sys
 if getattr(_sys, 'frozen', False):
     # PyInstaller: put debug output next to the exe, not inside _internal
     DEBUG_DIR = os.path.join(os.path.dirname(_sys.executable), "debug_output")
+    # Ensure bundled DLLs (mklml.dll, mkldnn.dll, etc.) are discoverable
+    _exe_dir = os.path.dirname(_sys.executable)
+    _internal_dir = os.path.join(_exe_dir, '_internal')
+    for _dll_dir in [_exe_dir, _internal_dir]:
+        if os.path.isdir(_dll_dir) and _dll_dir not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = _dll_dir + os.pathsep + os.environ.get('PATH', '')
+        try:
+            os.add_dll_directory(_dll_dir)
+        except (OSError, AttributeError):
+            pass
 else:
     from src.paths import BASE_DIR
     DEBUG_DIR = os.path.join(BASE_DIR, "debug_output")
@@ -190,6 +199,32 @@ def _init_paddle_ocr_sync():
         logger.info("Using CPU mode")
         
         logger.info("Initializing PaddleOCR in background...")
+        
+        # === PyInstaller fix: bypass PaddleX dependency checks ===
+        # In frozen mode, importlib.metadata can't find .dist-info directories,
+        # so PaddleX thinks dependencies are missing even though they're bundled.
+        # Monkey-patch the checks to no-ops since we know packages are present.
+        import sys
+        if getattr(sys, 'frozen', False):
+            # Fix NameErrors: PaddleX's lazy-import decorators fail in frozen mode,
+            # so packages like cv2, pyclipper, shapely never get injected into module
+            # namespaces. Adding them to builtins makes them resolvable everywhere.
+            import builtins
+            for _pkg in ['cv2', 'pyclipper', 'shapely']:
+                try:
+                    _mod = __import__(_pkg)
+                    setattr(builtins, _pkg, _mod)
+                except ImportError:
+                    logger.warning(f"{_pkg} not available in frozen mode")
+            logger.info("Injected lazy-import packages into builtins (frozen mode)")
+            try:
+                import paddlex.utils.deps as _px_deps
+                _px_deps.require_deps = lambda *a, **kw: None
+                _px_deps.require_extra = lambda *a, **kw: None
+                logger.info("Bypassed PaddleX dependency checks (frozen mode)")
+            except Exception as patch_err:
+                logger.warning(f"Could not patch PaddleX deps: {patch_err}")
+        
         # PaddleOCR 3.x: Disable document preprocessing features for game dialogue
         # These features (orientation, unwarping, textline) add significant latency
         # but are unnecessary for horizontal game subtitles
@@ -223,7 +258,9 @@ def _init_paddle_ocr_sync():
         _ocr_ready = True
         
     except Exception as e:
+        import traceback
         logger.error(f"Background OCR init failed: {e}")
+        traceback.print_exc()
 
 
 def preload_ocr():

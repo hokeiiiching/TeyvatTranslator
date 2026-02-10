@@ -19,9 +19,11 @@ try:
     import win32con
     import win32process
     HAS_WIN32 = True
-except ImportError:
+except ImportError as e:
     HAS_WIN32 = False
-    print("pywin32 not available, window capture disabled")
+    import traceback
+    print(f"pywin32 not available, window capture disabled: {e}")
+    traceback.print_exc()
 
 
 def get_window_list() -> List[Dict[str, any]]:
@@ -75,15 +77,29 @@ def find_genshin_window() -> Optional[Dict]:
     """
     Automatically find the Genshin Impact window.
     
+    Uses a two-pass approach to avoid matching browser tabs that
+    contain "Genshin Impact" in their title (e.g. the project website).
+    
     Returns:
         Window info dict if found, None otherwise.
     """
     windows = get_window_list()
     
-    # Look for common Genshin Impact window titles
+    # Exact game window titles (the actual game, not browser tabs)
+    exact_titles = {'原神', 'genshin impact'}
     genshin_keywords = ['genshin impact', '原神', 'genshinimpact']
+    browser_classes = {'Chrome_WidgetWin_1', 'MozillaWindowClass'}
     
+    # Pass 1: Exact title match (most reliable — catches the real game window)
     for window in windows:
+        if window['title'].strip().lower() in exact_titles:
+            print(f"Found Genshin window: '{window['title']}'")
+            return window
+    
+    # Pass 2: Substring match, skipping browser windows
+    for window in windows:
+        if window.get('class_name') in browser_classes:
+            continue
         title_lower = window['title'].lower()
         for keyword in genshin_keywords:
             if keyword in title_lower:

@@ -356,29 +356,6 @@ class MainWindow(QMainWindow):
         opacity_layout.addWidget(self.opacity_value_label)
         layout.addLayout(opacity_layout)
         
-        # Section separator
-        layout.addSpacing(24)
-        
-        # Features title
-        features_title = QLabel("Learning Features")
-        features_title.setFont(QFont("HYWenHei-85W", 14, QFont.Weight.Bold))
-        layout.addWidget(features_title)
-        
-        # Feature toggles with descriptions
-        self.context_checkbox = QCheckBox(
-            "Enable vocabulary lookup (RAG)"
-        )
-        self.context_checkbox.setChecked(True)
-        self.context_checkbox.setToolTip(
-            "Matches dialogue against 150+ Genshin-specific vocabulary terms\n"
-            "Provides pinyin, English translations, and character names"
-        )
-        layout.addWidget(self.context_checkbox)
-        
-        self.tts_checkbox = QCheckBox("Enable text-to-speech (experimental)")
-        self.tts_checkbox.setToolTip("Read Chinese text aloud using system TTS")
-        layout.addWidget(self.tts_checkbox)
-        
         layout.addStretch(1)
         return widget
         
@@ -560,8 +537,8 @@ class MainWindow(QMainWindow):
         self.translate_window = TranslateWindow(
             opacity=self.opacity_slider.value() / 100,
             font_size=int(self.size_combo.currentText()),
-            enable_tts=self.tts_checkbox.isChecked(),
-            enable_context=self.context_checkbox.isChecked()
+            enable_tts=False,
+            enable_context=True
         )
         self.translate_window.show()
         
@@ -592,8 +569,8 @@ class MainWindow(QMainWindow):
                 0, 0, selected_window['size'][0], selected_window['size'][1],
                 from_lang, to_lang,
                 self.translate_window,
-                self.tts_checkbox.isChecked(),
-                self.context_checkbox.isChecked(),
+                False,
+                True,
                 window_hwnd=hwnd,  # Pass window handle
                 dialogue_only=dialogue_only  # Pass dialogue mode
             )
@@ -611,8 +588,8 @@ class MainWindow(QMainWindow):
                 x1, y1, x2, y2,
                 from_lang, to_lang,
                 self.translate_window,
-                self.tts_checkbox.isChecked(),
-                self.context_checkbox.isChecked()
+                False,
+                True
             )
             
             self.status_label.setText("Translation active...")

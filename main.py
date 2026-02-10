@@ -57,6 +57,18 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 
+# === Log file for frozen mode (captures errors even with console=False) ===
+if getattr(sys, 'frozen', False):
+    try:
+        _log_path = os.path.join(os.path.dirname(sys.executable), 'TeyvatTranslator.log')
+        _log_file = open(_log_path, 'w', encoding='utf-8')
+        sys.stdout = _log_file
+        sys.stderr = _log_file
+        print(f"[main] Log started — exe={sys.executable}")
+        print(f"[main] APP_DIR={APP_DIR}")
+    except Exception:
+        pass  # If logging fails, continue without it
+
 # Set Windows AppUserModelID so the taskbar shows our icon (not the Python icon)
 try:
     import ctypes
