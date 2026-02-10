@@ -15,7 +15,7 @@ Real-time translation overlay with pinyin and vocabulary learning.
 
 ---
 
-## ⬇️ Download
+## Download
 
 **[Download TeyvatTranslator (Windows)](https://github.com/hokeiiiching/TeyvatTranslator/releases/latest)**
 
