@@ -46,8 +46,14 @@ from .ocr_config import ocr_config, ocr_diagnostics, OCRConfig
 # LOGGING CONFIGURATION
 # =============================================================================
 
-# Create debug directory
-DEBUG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "debug_output")
+# Create debug directory (writable location — use exe's parent for frozen mode)
+import sys as _sys
+if getattr(_sys, 'frozen', False):
+    # PyInstaller: put debug output next to the exe, not inside _internal
+    DEBUG_DIR = os.path.join(os.path.dirname(_sys.executable), "debug_output")
+else:
+    from src.paths import BASE_DIR
+    DEBUG_DIR = os.path.join(BASE_DIR, "debug_output")
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 # Configure structured logging

@@ -72,7 +72,8 @@ class SplashScreen(QWidget):
         
         # Logo image
         logo_label = QLabel()
-        logo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icon.png")
+        from src.paths import ASSETS_DIR
+        logo_path = os.path.join(ASSETS_DIR, "icon.png")
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
             # Scale to reasonable size while maintaining aspect ratio

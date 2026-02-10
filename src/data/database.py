@@ -11,8 +11,9 @@ import json
 from typing import List, Dict, Any, Optional
 from contextlib import contextmanager
 
-# Database path
-DB_DIR = os.path.dirname(__file__)
+# Database path (uses centralized resolver for PyInstaller compatibility)
+from src.paths import DATA_DIR
+DB_DIR = DATA_DIR
 DB_PATH = os.path.join(DB_DIR, 'genshin.db')
 
 

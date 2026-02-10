@@ -126,7 +126,8 @@ class RAGEngine:
             'locations': []
         }
         
-        data_dir = os.path.dirname(__file__).replace('engine', 'data')
+        from src.paths import DATA_DIR
+        data_dir = DATA_DIR
         
         # Load quest data if available
         quest_path = os.path.join(data_dir, 'quests.json')

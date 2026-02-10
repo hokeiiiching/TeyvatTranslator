@@ -293,6 +293,7 @@ class OCRDiagnostics:
 
 
 # === Global config instance ===
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'ocr_config.json')
+from src.paths import DATA_DIR
+CONFIG_PATH = os.path.join(DATA_DIR, 'ocr_config.json')
 ocr_config = OCRConfig.load(CONFIG_PATH)
 ocr_diagnostics = OCRDiagnostics(ocr_config)
