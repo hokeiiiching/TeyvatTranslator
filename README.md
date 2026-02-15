@@ -11,6 +11,8 @@ So I built this.
 
 Real-time translation overlay with pinyin and vocabulary learning.
 
+Non-GitHub download page: https://teyvattranslator.vercel.app/
+
 </div>
 
 ---
