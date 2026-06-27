@@ -15,13 +15,17 @@ from typing import Optional, Tuple
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QComboBox,
-    QSlider, QCheckBox, QMessageBox, QSizePolicy
+    QSlider, QCheckBox, QMessageBox, QSizePolicy, QButtonGroup
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from .region_selector import RegionSelector
 from .translate_window import TranslateWindow
+from src.engine.language_config import (
+    SOURCE_LANGUAGE_OPTIONS,
+    get_source_label,
+)
 from src.engine.ocr import OCRWorker
 
 
@@ -135,40 +139,78 @@ class MainWindow(QMainWindow):
         """
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(20)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
         
         # Title
         title = QLabel("Language")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setFont(QFont("HYWenHei-85W", 18, QFont.Weight.Bold))
+        title.setFont(QFont("HYWenHei-85W", 16, QFont.Weight.Bold))
         layout.addWidget(title)
+
+        lang_layout = QHBoxLayout()
+        lang_layout.setSpacing(10)
+        source_label = QLabel("Chinese Script")
+        source_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        source_label.setStyleSheet("color: #e0e0e0; font-size: 11px;")
+        lang_layout.addWidget(source_label)
+
+        self.source_lang_group = QButtonGroup(self)
+        self.source_lang_group.setExclusive(True)
+        self.source_lang_buttons = {}
+
+        for index, (label, code) in enumerate(SOURCE_LANGUAGE_OPTIONS):
+            button = QPushButton(label.replace("Chinese (", "").replace(")", ""))
+            button.setCheckable(True)
+            button.setProperty("source_lang", code)
+            button.setMinimumHeight(34)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setToolTip(f"Use {label} OCR and translation support")
+            button.setStyleSheet(
+                "QPushButton {"
+                "border: 1px solid #4a4a68;"
+                "border-radius: 6px;"
+                "padding: 6px 14px;"
+                "color: #d8d8e8;"
+                "background: #252536;"
+                "}"
+                "QPushButton:checked {"
+                "border-color: #c9a962;"
+                "color: #ffffff;"
+                "background: #3a3424;"
+                "}"
+            )
+            button.clicked.connect(self._update_language_info)
+            self.source_lang_group.addButton(button)
+            self.source_lang_buttons[code] = button
+            lang_layout.addWidget(button)
+            if index == 0:
+                button.setChecked(True)
+
+        layout.addLayout(lang_layout)
         
-        # Language info - fixed to Chinese (Simplified) to English
-        lang_info = QLabel("Chinese (Simplified)  →  English")
+        # Language info
+        lang_info = QLabel("")
         lang_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lang_info.setFont(QFont("HYWenHei-85W", 14))
-        lang_info.setStyleSheet("color: #c9a962; padding: 8px 0;")
+        lang_info.setFont(QFont("HYWenHei-85W", 12))
+        lang_info.setStyleSheet("color: #c9a962; padding: 2px 0;")
         layout.addWidget(lang_info)
-        
-        # Note about supported languages
-        lang_note = QLabel("Optimized for PaddleOCR Chinese recognition")
-        lang_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lang_note.setStyleSheet("color: #8080a0; font-size: 11px; margin-bottom: 8px;")
-        layout.addWidget(lang_note)
+        self.lang_info = lang_info
+        self._update_language_info()
         
         # ===== CAPTURE METHOD SECTION =====
         method_label = QLabel("Step 1: Choose Capture Method")
         method_label.setFont(QFont("HYWenHei-85W", 12, QFont.Weight.Bold))
-        method_label.setStyleSheet("margin-top: 16px;")
+        method_label.setStyleSheet("margin-top: 8px;")
         layout.addWidget(method_label)
         
         help_text = QLabel(
             "Option A (Recommended): Select Genshin from dropdown below\n"
             "Option B (Advanced): Use 'Select Region' to draw a box on screen"
         )
-        help_text.setStyleSheet("color: #8080a0; font-size: 11px; margin-bottom: 8px;")
+        help_text.setMinimumHeight(46)
+        help_text.setStyleSheet("color: #8080a0; font-size: 11px; margin-bottom: 4px;")
         layout.addWidget(help_text)
         
         # Window selection section - responsive layout
@@ -178,17 +220,20 @@ class MainWindow(QMainWindow):
         # Window dropdown - fills available space
         self.window_combo = QComboBox()
         self.window_combo.addItem("-- Select a window --")
+        self.window_combo.setMinimumHeight(44)
         self.window_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         window_layout.addWidget(self.window_combo, 3)  # Takes 3 parts of space
         
         # Auto-detect Genshin button
         self.detect_btn = QPushButton("Find Genshin")
+        self.detect_btn.setMinimumHeight(44)
         self.detect_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.detect_btn.clicked.connect(self._on_find_genshin)
         window_layout.addWidget(self.detect_btn, 1)  # Takes 1 part
         
         # Refresh windows button
         self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.setMinimumHeight(44)
         self.refresh_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.refresh_btn.setToolTip("Refresh window list")
         self.refresh_btn.clicked.connect(self._refresh_window_list)
@@ -248,6 +293,26 @@ class MainWindow(QMainWindow):
         
         layout.addStretch(1)
         return widget
+
+    def _selected_source_lang(self) -> str:
+        """Return the selected source language code."""
+        if not hasattr(self, "source_lang_group"):
+            return "chi_sim"
+        checked_button = self.source_lang_group.checkedButton()
+        if checked_button is None:
+            return "chi_sim"
+        return checked_button.property("source_lang") or "chi_sim"
+
+    def _update_language_info(self) -> None:
+        """Update the displayed language direction."""
+        if not hasattr(self, "lang_info"):
+            return
+        source_lang = self._selected_source_lang()
+        self.lang_info.setText(f"{get_source_label(source_lang)}  ->  English")
+        if source_lang == "chi_tra":
+            from src.engine.ocr import preload_ocr
+
+            preload_ocr(source_lang)
     
     def _refresh_window_list(self) -> None:
         """Refresh the list of available windows."""
@@ -525,8 +590,8 @@ class MainWindow(QMainWindow):
             )
             return
             
-        # Fixed language settings (Chinese Simplified to English)
-        from_lang = "chi_sim"
+        # Source language comes from the selected Chinese script.
+        from_lang = self._selected_source_lang()
         to_lang = "eng"
         
         # Close existing translate window if open
@@ -556,6 +621,7 @@ class MainWindow(QMainWindow):
             print(f"  Window: {selected_window['title']}")
             print(f"  Handle: {hwnd}")
             print(f"  Size: {selected_window['size']}")
+            print(f"  Source language: {get_source_label(from_lang)}")
             
             # Check if dialogue-only mode
             dialogue_only = self.dialogue_checkbox.isChecked()
@@ -576,13 +642,17 @@ class MainWindow(QMainWindow):
             )
             
             mode_str = "dialogue" if dialogue_only else "full window"
-            self.status_label.setText(f"Translating {mode_str}: {selected_window['title'][:25]}...")
+            self.status_label.setText(
+                f"Translating {get_source_label(from_lang)} {mode_str}: "
+                f"{selected_window['title'][:25]}..."
+            )
         else:
             # Screen region capture mode
             x1, y1, x2, y2 = self.selected_region
             
             print(f"\nUsing SCREEN REGION capture mode")
             print(f"  Region: ({x1}, {y1}) to ({x2}, {y2})")
+            print(f"  Source language: {get_source_label(from_lang)}")
             
             self.ocr_worker = OCRWorker(
                 x1, y1, x2, y2,
@@ -592,7 +662,7 @@ class MainWindow(QMainWindow):
                 True
             )
             
-            self.status_label.setText("Translation active...")
+            self.status_label.setText(f"Translation active: {get_source_label(from_lang)}")
         
         self.translate_window.set_worker(self.ocr_worker)
         self.ocr_worker.start()

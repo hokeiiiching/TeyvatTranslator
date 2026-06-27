@@ -26,7 +26,7 @@ Non-GitHub download page: https://teyvattranslator.vercel.app/
 1. **Download** `TeyvatTranslator-Setup.exe` from the link above
 2. **Run** the installer and follow the prompts
 3. **Launch** from Start Menu or Desktop shortcut
-4. Select the Genshin Impact window and click **Start Translation**
+4. Choose Simplified or Traditional Chinese, select the Genshin Impact window, and click **Start Translation**
 
 > First launch downloads translation models (~300MB) and may take a while. This only happens once.
 
@@ -35,6 +35,7 @@ Non-GitHub download page: https://teyvattranslator.vercel.app/
 ## Features
 
 - **Live Translation**: Real-time OCR of game dialogue
+- **Chinese Script Support**: Supports Simplified and Traditional Chinese game text
 - **Pinyin Display**: See pronunciation for every character
 - **Genshin Vocabulary**: 700+ game-specific terms with context
 - **Offline Mode**: Works offline after first download

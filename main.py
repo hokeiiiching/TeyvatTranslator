@@ -15,12 +15,10 @@ Version: 1.0.0
 import os
 import sys
 
-# === CRITICAL: Disable PaddleX connectivity check BEFORE any imports ===
-# PaddleX performs a connectivity check when imported. To bypass this:
-# 1. Set the environment variable FIRST
-# 2. Use importlib to load ONLY the flags module (without triggering full paddlex import)
-# 3. Patch the flag directly
 os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
+os.environ["FLAGS_use_mkldnn"] = "0"
 
 try:
     import importlib.util
@@ -142,7 +140,6 @@ def main() -> None:
     main_window.show()
     
     # Start the event loop
-    print("Genshin Translator started")
     sys.exit(app.exec())
 
 

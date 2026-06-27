@@ -186,22 +186,27 @@ class Translator:
             except Exception:
                 pass
     
-    def translate(self, text: str) -> str:
+    def translate(self, text: str, marian_text: Optional[str] = None) -> str:
         """
         Translate text. Tries MarianMT first, falls back to Google.
         
         Args:
             text: Chinese text to translate
+            marian_text: Optional text to send to MarianMT only. This lets
+                callers normalize text for the local model while preserving
+                the original text for Google Translate fallback.
             
         Returns:
             English translation, or error message if all methods fail
         """
         if not text or not text.strip():
             return ""
+
+        offline_text = marian_text if marian_text is not None else text
         
         # Try MarianMT first (fast, offline)
         if MARIAN_AVAILABLE and _marian_ready:
-            result = _translate_marian(text)
+            result = _translate_marian(offline_text)
             if result:
                 logger.debug(f"MarianMT: {text[:20]}... → {result[:30]}...")
                 return result

@@ -7,7 +7,17 @@ This package contains the core processing components:
 - ContextEngine: Vocabulary matching and lookup
 """
 
-from .ocr import OCRWorker
-from .context import ContextEngine
-
 __all__ = ['OCRWorker', 'ContextEngine']
+
+
+def __getattr__(name):
+    """Lazy-load heavy engine components only when requested."""
+    if name == 'OCRWorker':
+        from .ocr import OCRWorker
+
+        return OCRWorker
+    if name == 'ContextEngine':
+        from .context import ContextEngine
+
+        return ContextEngine
+    raise AttributeError(f"module 'src.engine' has no attribute {name!r}")

@@ -11,13 +11,19 @@ Supports PaddleOCR (preferred for Chinese).
 # Skip PaddleOCR connectivity check if models already cached (faster startup for returning users)
 import os
 os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
+# PaddlePaddle 3.x on Windows CPU can fail in oneDNN/MKLDNN graph execution with
+# ConvertPirAttribute2RuntimeAttribute errors. Disable it before Paddle imports.
+os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
+os.environ["FLAGS_use_mkldnn"] = "0"
 
 
 import time
 import os
 import logging
 from typing import Optional, Dict, Any, List
-from threading import Thread
+from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -28,6 +34,7 @@ import numpy as np
 
 from PIL import ImageGrab, Image
 from .translator import Translator, get_translator
+from .language_config import get_paddle_lang, make_cache_key, normalize_for_lookup
 
 # Auto-pinyin generation
 try:
@@ -178,27 +185,32 @@ except Exception as e:
     logger.warning(f"PaddleOCR import error: {PADDLE_ERROR}")
 
 # =============================================================================
-# GLOBAL OCR INSTANCE (for background pre-initialization)
+# GLOBAL OCR INSTANCES (for background pre-initialization)
 # =============================================================================
-_global_paddle_ocr = None
-_ocr_init_lock = None
-_ocr_init_thread = None
-_ocr_ready = False
+_global_paddle_ocr: Dict[str, Any] = {}
+_ocr_init_lock = Lock()
+_ocr_init_threads: Dict[str, Thread] = {}
+_ocr_ready: Dict[str, bool] = {}
 
-def _init_paddle_ocr_sync():
+def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
     """Initialize PaddleOCR synchronously (called in background thread)."""
-    global _global_paddle_ocr, _ocr_ready
+    paddle_lang = get_paddle_lang(source_lang)
     
     if not PADDLE_AVAILABLE:
         logger.error("Cannot initialize: PaddleOCR not available")
         return
+    
+    with _ocr_init_lock:
+        if paddle_lang in _global_paddle_ocr:
+            _ocr_ready[paddle_lang] = True
+            return
     
     try:
         import paddle
         paddle.device.set_device('cpu')
         logger.info("Using CPU mode")
         
-        logger.info("Initializing PaddleOCR in background...")
+        logger.info(f"Initializing PaddleOCR model '{paddle_lang}'...")
         
         # === PyInstaller fix: bypass PaddleX dependency checks ===
         # In frozen mode, importlib.metadata can't find .dist-info directories,
@@ -228,15 +240,15 @@ def _init_paddle_ocr_sync():
         # PaddleOCR 3.x: Disable document preprocessing features for game dialogue
         # These features (orientation, unwarping, textline) add significant latency
         # but are unnecessary for horizontal game subtitles
-        _global_paddle_ocr = PaddleOCR(
-            lang='ch',
+        ocr = PaddleOCR(
+            lang=paddle_lang,
             use_doc_orientation_classify=False,  # Skip document orientation detection
             use_doc_unwarping=False,             # Skip document dewarping
             use_textline_orientation=False       # Skip textline orientation (conflicts with use_angle_cls)
         )
         
         # Warmup pass
-        logger.info("Warming up OCR model...")
+        logger.info(f"Warming up OCR model '{paddle_lang}'...")
         try:
             from PIL import Image, ImageDraw, ImageFont
             warmup_pil = Image.new('RGB', (400, 100), color='white')
@@ -252,61 +264,68 @@ def _init_paddle_ocr_sync():
             warmup_img.fill(255)
             warmup_img[40:60, 50:250] = 0
         
-        _ = _global_paddle_ocr.ocr(warmup_img)
-        logger.info("PaddleOCR warmup complete")
-        logger.info("PaddleOCR ready (background init)")
-        _ocr_ready = True
+        _ = ocr.ocr(warmup_img)
+        logger.info(f"PaddleOCR warmup complete for '{paddle_lang}'")
+        logger.info(f"PaddleOCR ready: {paddle_lang}")
+        with _ocr_init_lock:
+            _global_paddle_ocr[paddle_lang] = ocr
+            _ocr_ready[paddle_lang] = True
         
     except Exception as e:
         import traceback
-        logger.error(f"Background OCR init failed: {e}")
+        with _ocr_init_lock:
+            _ocr_ready[paddle_lang] = False
+        logger.error(f"OCR init failed for '{paddle_lang}': {e}")
         traceback.print_exc()
 
 
-def preload_ocr():
+def preload_ocr(source_lang: str = "chi_sim"):
     """
     Start PaddleOCR initialization in a background thread.
     Call this at app startup to reduce wait time when OCR is first needed.
     """
-    global _ocr_init_thread, _ocr_init_lock
+    paddle_lang = get_paddle_lang(source_lang)
     
     if not PADDLE_AVAILABLE:
         return
     
-    if _global_paddle_ocr is not None or _ocr_ready:
+    if paddle_lang in _global_paddle_ocr or _ocr_ready.get(paddle_lang):
         return  # Already initialized
     
-    from threading import Thread, Lock
-    _ocr_init_lock = Lock()
+    thread = _ocr_init_threads.get(paddle_lang)
+    if thread is not None and thread.is_alive():
+        return
     
-    _ocr_init_thread = Thread(target=_init_paddle_ocr_sync, daemon=True)
-    _ocr_init_thread.start()
-    logger.info("OCR background initialization started")
+    thread = Thread(target=_init_paddle_ocr_sync, args=(source_lang,), daemon=True)
+    _ocr_init_threads[paddle_lang] = thread
+    thread.start()
+    logger.info(f"OCR background initialization started for '{paddle_lang}'")
 
 
-def get_paddle_ocr():
+def get_paddle_ocr(source_lang: str = "chi_sim"):
     """
     Get the shared PaddleOCR instance.
     If preload_ocr() was called, returns the pre-initialized instance.
     Otherwise, initializes on demand (lazy loading).
     """
-    global _global_paddle_ocr, _ocr_init_thread, _ocr_ready
+    paddle_lang = get_paddle_lang(source_lang)
     
     if not PADDLE_AVAILABLE:
         return None
     
     # Wait for background init to complete if in progress
-    if _ocr_init_thread is not None and _ocr_init_thread.is_alive():
-        logger.info("Waiting for background OCR init to complete...")
-        _ocr_init_thread.join()
+    thread = _ocr_init_threads.get(paddle_lang)
+    if thread is not None and thread.is_alive():
+        logger.info(f"Waiting for background OCR init to complete for '{paddle_lang}'...")
+        thread.join()
     
     # Return cached instance if available
-    if _global_paddle_ocr is not None:
-        return _global_paddle_ocr
+    if paddle_lang in _global_paddle_ocr:
+        return _global_paddle_ocr[paddle_lang]
     
     # Fallback: initialize synchronously
-    _init_paddle_ocr_sync()
-    return _global_paddle_ocr
+    _init_paddle_ocr_sync(source_lang)
+    return _global_paddle_ocr.get(paddle_lang)
 
 
 # Debug settings - set to False for production to reduce overhead
@@ -434,6 +453,33 @@ def is_descriptor_line(line: str) -> bool:
     return False
 
 
+def _chinese_chars(line: str) -> List[str]:
+    """Return CJK characters from a text line."""
+    return [c for c in line if '\u4e00' <= c <= '\u9fff']
+
+
+def _has_dialogue_punctuation(line: str) -> bool:
+    """Return whether a line looks like sentence/dialogue text."""
+    return any(p in line for p in '。？！?!，,、…')
+
+
+def _looks_like_speaker_line(line: str) -> bool:
+    """Return whether a line is shaped like a Genshin speaker name."""
+    line = line.strip()
+    chinese_chars = _chinese_chars(line)
+    return (
+        1 <= len(chinese_chars) <= 6
+        and len(line) <= 10
+        and not _has_dialogue_punctuation(line)
+    )
+
+
+def _looks_like_dialogue_option_line(line: str) -> bool:
+    """Return whether a leading OCR line is likely a dialogue choice."""
+    line = line.strip()
+    return len(_chinese_chars(line)) >= 4 and _has_dialogue_punctuation(line)
+
+
 class OCRWorker:
     """
     Background worker for continuous OCR and translation.
@@ -542,7 +588,7 @@ class OCRWorker:
         # PaddleOCR will be lazily initialized on first use (faster startup)
         self.paddle_ocr = None
         if PADDLE_AVAILABLE:
-            print("  OCR Engine: PaddleOCR (Chinese optimized, lazy-loaded)")
+            print(f"  OCR Engine: PaddleOCR ({get_paddle_lang(from_lang)}, lazy-loaded)")
         else:
             print("  OCR Engine: NONE (PaddleOCR missing)")
         
@@ -705,6 +751,10 @@ class OCRWorker:
                 
                 normalized_new = normalize_for_comparison(ocr_result.text)
                 normalized_current = normalize_for_comparison(self.current_text)
+                fast_traditional_result = (
+                    self.from_lang == "chi_tra"
+                    and ocr_result.confidence >= 0.90
+                )
                 
                 # Skip if same as already-translated text
                 if normalized_new == normalized_current:
@@ -718,30 +768,38 @@ class OCRWorker:
                     time.sleep(0.1)
                     continue
                 
-                # === TIMER-BASED TEXT STABILITY CHECK ===
-                # New text detected - check if it matches our candidate
-                normalized_candidate = normalize_for_comparison(self._candidate_text)
-                current_time = time.perf_counter()
-                
-                if normalized_new != normalized_candidate:
-                    # New candidate - start timer
-                    self._candidate_text = ocr_result.text
-                    self._candidate_timestamp = current_time
-                    logger.debug(f"[Frame {self.frame_count}] New candidate text, starting stability timer")
-                    time.sleep(0.1)
-                    continue
-                
-                # Same as candidate - check if stable long enough
-                elapsed = current_time - self._candidate_timestamp
-                if elapsed < self.TEXT_STABILITY_DELAY:
-                    logger.debug(f"[Frame {self.frame_count}] Waiting for stability ({elapsed:.2f}s / {self.TEXT_STABILITY_DELAY}s)")
-                    time.sleep(0.1)
-                    continue
-                
-                # Text is stable! Clear candidate and proceed to translate
-                logger.debug(f"[Frame {self.frame_count}] Text stable for {elapsed:.2f}s, translating")
-                self._candidate_text = None
-                self._candidate_timestamp = 0.0
+                if fast_traditional_result:
+                    logger.debug(
+                        f"[Frame {self.frame_count}] High-confidence Traditional OCR "
+                        f"({ocr_result.confidence:.2f}), translating without second OCR stability pass"
+                    )
+                    self._candidate_text = None
+                    self._candidate_timestamp = 0.0
+                else:
+                    # === TIMER-BASED TEXT STABILITY CHECK ===
+                    # New text detected - check if it matches our candidate
+                    normalized_candidate = normalize_for_comparison(self._candidate_text)
+                    current_time = time.perf_counter()
+                    
+                    if normalized_new != normalized_candidate:
+                        # New candidate - start timer
+                        self._candidate_text = ocr_result.text
+                        self._candidate_timestamp = current_time
+                        logger.debug(f"[Frame {self.frame_count}] New candidate text, starting stability timer")
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Same as candidate - check if stable long enough
+                    elapsed = current_time - self._candidate_timestamp
+                    if elapsed < self.TEXT_STABILITY_DELAY:
+                        logger.debug(f"[Frame {self.frame_count}] Waiting for stability ({elapsed:.2f}s / {self.TEXT_STABILITY_DELAY}s)")
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Text is stable! Clear candidate and proceed to translate
+                    logger.debug(f"[Frame {self.frame_count}] Text stable for {elapsed:.2f}s, translating")
+                    self._candidate_text = None
+                    self._candidate_timestamp = 0.0
                 
                 # === STEP 3: Update current text ===
                 self.current_text = ocr_result.text
@@ -799,6 +857,12 @@ class OCRWorker:
                     
                     # Capture dialogue region only (bottom of screen)
                     img_np = capture_window_dialogue(self.window_hwnd)
+                    if img_np is not None and self.from_lang == "chi_tra":
+                        # Traditional UI often keeps selectable dialogue choices
+                        # above the active subtitle. Keep the lower subtitle band
+                        # so OCR sees speaker + active dialogue, not choices.
+                        top_trim = int(img_np.shape[0] * 0.38)
+                        img_np = img_np[top_trim:, :]
                     
                     if DEBUG_MODE and self.frame_count <= 3:
                         print(f"  Using DIALOGUE capture mode")
@@ -878,11 +942,11 @@ class OCRWorker:
         
         # Get PaddleOCR instance (uses pre-initialized global instance if available)
         if self.paddle_ocr is None:
-            self.paddle_ocr = get_paddle_ocr()
+            self.paddle_ocr = get_paddle_ocr(self.from_lang)
             if self.paddle_ocr is None:
                 raise RuntimeError(
-                    "PaddleOCR is not installed!\n"
-                    "Run: py -m pip install paddlepaddle paddleocr"
+                    f"PaddleOCR failed to initialize for source language '{self.from_lang}'.\n"
+                    f"Check {LOG_FILE} for the underlying PaddleOCR error."
                 )
         
         # === Convert RGB to BGR if needed (PaddleOCR uses OpenCV convention) ===
@@ -1182,29 +1246,51 @@ class OCRWorker:
             print(f"TRANSLATING: '{text}'")
             print(f"{'='*50}")
         
+        text_original = text
+        text_lookup = normalize_for_lookup(text_original, self.from_lang)
         context = {}
         translated = ""
         speaker = ""
-        dialogue = text
+        dialogue = text_original
         
         # Parse speaker name if OCR captured multiple lines
         # Speaker name is typically the first shorter line (< 10 chars)
         # Descriptor lines (NPC title/affiliation) may appear between speaker and dialogue
-        lines = text.split('\n')
+        lines = text_original.split('\n')
         descriptor = ""  # NPC title/affiliation line
         
         if len(lines) >= 2:
             potential_speaker = lines[0].strip()
             # Speaker name is usually short (2-5 Chinese characters) and centered
-            chinese_chars = [c for c in potential_speaker if '\u4e00' <= c <= '\u9fff']
+            chinese_chars = _chinese_chars(potential_speaker)
             
             # Skip garbage lines with no Chinese characters (e.g., 'AAAA' from UI artifacts)
             start_idx = 0
+            if self.from_lang == "chi_tra" and not _looks_like_speaker_line(potential_speaker):
+                # Traditional OCR can see visible dialogue choices above the active
+                # subtitle. If a short speaker name follows, drop those leading
+                # choice lines before parsing speaker/dialogue.
+                for candidate_idx in range(1, min(len(lines) - 1, 3)):
+                    candidate_speaker = lines[candidate_idx].strip()
+                    skipped_lines = lines[:candidate_idx]
+                    if (
+                        _looks_like_speaker_line(candidate_speaker)
+                        and any(_looks_like_dialogue_option_line(line) for line in skipped_lines)
+                    ):
+                        start_idx = candidate_idx
+                        potential_speaker = candidate_speaker
+                        chinese_chars = _chinese_chars(potential_speaker)
+                        logger.debug(
+                            "  Skipped leading dialogue option line(s): "
+                            f"{[line.strip() for line in skipped_lines]}"
+                        )
+                        break
+
             if len(chinese_chars) == 0 and len(lines) >= 3:
                 # First line is garbage, try line 2 as speaker
                 start_idx = 1
                 potential_speaker = lines[1].strip()
-                chinese_chars = [c for c in potential_speaker if '\u4e00' <= c <= '\u9fff']
+                chinese_chars = _chinese_chars(potential_speaker)
                 logger.debug(f"  Skipped garbage line: '{lines[0].strip()}', using line 2 as speaker")
             
             if 1 <= len(chinese_chars) <= 6 and len(potential_speaker) <= 10:
@@ -1239,6 +1325,16 @@ class OCRWorker:
                 if descriptor:
                     print(f"  NPC descriptor: {descriptor}")
         
+        speaker_lookup = normalize_for_lookup(speaker, self.from_lang)
+        descriptor_lookup = normalize_for_lookup(descriptor, self.from_lang)
+        dialogue_lookup = normalize_for_lookup(dialogue, self.from_lang)
+        logger.debug(
+            "  Lookup normalization: "
+            f"source={self.from_lang}, text_changed={text_lookup != text_original}, "
+            f"dialogue_changed={dialogue_lookup != dialogue}, "
+            f"descriptor_changed={descriptor_lookup != descriptor}"
+        )
+        
         # Generate pinyin for speaker
         if speaker and PINYIN_AVAILABLE:
             try:
@@ -1252,11 +1348,11 @@ class OCRWorker:
                 
                 # Try to find English name from vocabulary
                 if self.rag_engine:
-                    matches = self.rag_engine.get_context(speaker)
-                    logger.debug(f"  RAG returned {len(matches) if matches else 0} matches for speaker '{speaker}'")
+                    matches = self.rag_engine.get_context(speaker_lookup)
+                    logger.debug(f"  RAG returned {len(matches) if matches else 0} matches for speaker '{speaker_lookup}'")
                     # Search ALL matches for exact mandarin match (not just first)
                     for match in (matches or []):
-                        if match.get('mandarin', '') == speaker:
+                        if match.get('mandarin', '') == speaker_lookup:
                             context['speaker_english'] = match.get('english', '')
                             # Also use vocabulary pinyin if available (more accurate)
                             vocab_pinyin = match.get('pinyin', '')
@@ -1267,7 +1363,7 @@ class OCRWorker:
                     else:
                         # Log what we found if no exact match
                         if matches:
-                            logger.debug(f"  No exact match. First result mandarin: '{matches[0].get('mandarin', '')}' vs speaker: '{speaker}'")
+                            logger.debug(f"  No exact match. First result mandarin: '{matches[0].get('mandarin', '')}' vs speaker lookup: '{speaker_lookup}'")
             except Exception as e:
                 context['speaker'] = speaker
                 logger.debug(f"  Speaker pinyin failed: {e}")
@@ -1292,17 +1388,32 @@ class OCRWorker:
             try:
                 # Strip 「」 brackets before translation - they confuse Google Translate
                 descriptor_clean = descriptor.replace('「', '').replace('」', '')
+                descriptor_translation_lookup = normalize_for_lookup(
+                    descriptor_clean, self.from_lang
+                )
+                descriptor_marian_text = (
+                    descriptor_translation_lookup
+                    if descriptor_translation_lookup != descriptor_clean
+                    else None
+                )
                 
                 # Check cache first (descriptors repeat frequently)
                 # Check cache first
-                cached = self._cache_get(descriptor_clean)
+                descriptor_cache_key = make_cache_key(
+                    self.from_lang, "descriptor", descriptor_clean
+                )
+                cached = self._cache_get(descriptor_cache_key)
                 if cached:
                     descriptor_english = cached
                     logger.debug(f"  Descriptor cache hit: {descriptor_english}")
                 else:
-                    descriptor_english = self._translate_with_retry(descriptor_clean, max_retries=2)
+                    descriptor_english = self._translate_with_retry(
+                        descriptor_clean,
+                        max_retries=2,
+                        marian_text=descriptor_marian_text,
+                    )
                     # Cache descriptor translation
-                    self._cache_set(descriptor_clean, descriptor_english)
+                    self._cache_set(descriptor_cache_key, descriptor_english)
                 
                 context['descriptor_english'] = descriptor_english
             except Exception as e:
@@ -1310,22 +1421,27 @@ class OCRWorker:
                 logger.debug(f"  Descriptor translation failed: {e}")
         
         # RAG for exact vocabulary matches only
-        if self.enable_context and self.rag_engine and len(dialogue) <= 10:
-            matches = self.rag_engine.get_context(dialogue)
-            if matches and matches[0].get('mandarin', '') == dialogue:
+        if self.enable_context and self.rag_engine and len(dialogue_lookup) <= 10:
+            matches = self.rag_engine.get_context(dialogue_lookup)
+            if matches and matches[0].get('mandarin', '') == dialogue_lookup:
                 translated = matches[0].get('english', '')
                 print(f"  RAG exact match: {translated}")
         
         # Fall back to translation (check cache first)
         if not translated:
-            cached = self._cache_get(dialogue)
+            dialogue_cache_key = make_cache_key(self.from_lang, "dialogue", dialogue)
+            cached = self._cache_get(dialogue_cache_key)
             if cached:
                 translated = cached
                 logger.debug(f"  Cache hit: {translated}")
             else:
-                translated = self._translate_with_retry(dialogue, max_retries=3)
+                translated = self._translate_with_retry(
+                    dialogue,
+                    max_retries=3,
+                    marian_text=dialogue_lookup if dialogue_lookup != dialogue else None,
+                )
                 # Persist to cache
-                self._cache_set(dialogue, translated)
+                self._cache_set(dialogue_cache_key, translated)
         
         # Update the display window
         self.translate_window.update_translation(dialogue, translated, context)
@@ -1338,14 +1454,21 @@ class OCRWorker:
             except Exception as e:
                 print(f"TTS error: {e}")
     
-    def _translate_with_retry(self, text: str, max_retries: int = 3) -> str:
+    def _translate_with_retry(
+        self,
+        text: str,
+        max_retries: int = 3,
+        marian_text: Optional[str] = None,
+    ) -> str:
         """Translate text using MarianMT (primary) or Google Translate (fallback)."""
         if DEBUG_MODE:
             print(f"  Translating: '{text}' (backend: {self._translator.backend})")
+            if marian_text is not None and marian_text != text:
+                print("  MarianMT input normalized for Traditional Chinese")
         
         for attempt in range(max_retries):
             try:
-                translated = self._translator.translate(text)
+                translated = self._translator.translate(text, marian_text=marian_text)
                 
                 if translated and translated != "[Translation unavailable]":
                     print(f"  🌐 Result: {translated}")
