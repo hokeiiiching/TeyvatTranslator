@@ -9,7 +9,7 @@ capture, intelligent vocabulary matching, and enhanced translation display.
 
 Author: hokeiiiching
 License: MIT
-Version: 1.1.0
+Version: 1.1.1
 """
 
 import os
@@ -80,6 +80,22 @@ from PyQt6.QtGui import QIcon
 from src.ui.main_window import MainWindow
 
 
+def run_ocr_smoke() -> int:
+    """Run the real OCR parity check without opening the desktop UI."""
+    try:
+        from src.engine.ocr_smoke import run_real_ocr_parity_smoke
+
+        recognized = run_real_ocr_parity_smoke()
+        print(f"OCR parity smoke passed: {recognized}", flush=True)
+        return 0
+    except Exception as exc:
+        import traceback
+
+        print(f"OCR parity smoke failed: {type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc()
+        return 1
+
+
 def load_stylesheet(app: QApplication) -> None:
     """
     Load the application stylesheet from the styles directory.
@@ -120,7 +136,7 @@ def main() -> None:
     # Create application instance
     app = QApplication(sys.argv)
     app.setApplicationName("Genshin Translator")
-    app.setApplicationVersion("1.1.0")
+    app.setApplicationVersion("1.1.1")
     app.setOrganizationName("GenshinTranslator")
     
     # Start OCR pre-initialization in background (reduces wait time on first translation)
@@ -144,4 +160,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--ocr-smoke" in sys.argv:
+        sys.exit(run_ocr_smoke())
     main()

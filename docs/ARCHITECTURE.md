@@ -30,7 +30,7 @@ This document explains the Genshin Translator codebase architecture for develope
 **Flow**:
 1. Read the selected source script (`chi_sim` or `chi_tra`)
 2. Capture the dialogue region from the game window
-3. Run the matching PaddleOCR language route (`ch` or `chinese_cht`)
+3. Run the shared, Traditional-capable PaddleOCR `ch` profile
 4. Keep the captured text unchanged for display and pinyin
 5. Normalize a private Traditional-to-Simplified copy with OpenCC for vocabulary lookup
 6. Detect speaker name vs dialogue text
@@ -38,7 +38,8 @@ This document explains the Genshin Translator codebase architecture for develope
 
 **Important Implementation Details**:
 - PaddleOCR is lazily loaded on first use (faster startup)
-- Simplified and Traditional OCR instances are cached separately
+- Simplified and Traditional reuse one verified PP-OCRv6 OCR instance
+- Capture, preprocessing, confidence filtering, stability, and line parsing are script-agnostic
 - A warmup pass runs on initialization to ensure first-frame accuracy
 - Dialogue detection compares lines to avoid redundant translations
 - Missing Traditional conversion data is caught before capture starts rather than silently degrading lookup accuracy

@@ -1,3 +1,4 @@
+import inspect
 import sys
 import types
 import unittest
@@ -89,20 +90,78 @@ class OCRLanguageParityTests(unittest.TestCase):
         worker._translate_with_retry = MagicMock(return_value="Translated dialogue")
         return worker
 
-    def test_cached_ocr_instances_are_selected_by_source_script(self):
-        simplified_ocr = object()
-        traditional_ocr = object()
+    def test_both_scripts_reuse_the_same_working_ocr_instance(self):
+        shared_chinese_ocr = object()
 
         with (
             patch.object(ocr, "PADDLE_AVAILABLE", True),
             patch.dict(
                 ocr._global_paddle_ocr,
-                {"ch": simplified_ocr, "chinese_cht": traditional_ocr},
+                {"ch": shared_chinese_ocr},
                 clear=True,
             ),
         ):
-            self.assertIs(ocr.get_paddle_ocr("chi_sim"), simplified_ocr)
-            self.assertIs(ocr.get_paddle_ocr("chi_tra"), traditional_ocr)
+            self.assertIs(ocr.get_paddle_ocr("chi_sim"), shared_chinese_ocr)
+            self.assertIs(ocr.get_paddle_ocr("chi_tra"), shared_chinese_ocr)
+
+    def test_preloading_both_scripts_starts_only_one_ocr_initialization(self):
+        fake_thread = MagicMock()
+        fake_thread.is_alive.return_value = True
+
+        with (
+            patch.object(ocr, "PADDLE_AVAILABLE", True),
+            patch.dict(ocr._global_paddle_ocr, {}, clear=True),
+            patch.dict(ocr._ocr_ready, {}, clear=True),
+            patch.dict(ocr._ocr_init_threads, {}, clear=True),
+            patch.object(ocr, "Thread", return_value=fake_thread) as thread_class,
+        ):
+            ocr.preload_ocr("chi_sim")
+            ocr.preload_ocr("chi_tra")
+
+        thread_class.assert_called_once()
+        fake_thread.start.assert_called_once_with()
+
+    def test_unavailable_ocr_reports_an_error_instead_of_returning_none(self):
+        with (
+            patch.object(ocr, "PADDLE_AVAILABLE", False),
+            patch.object(ocr, "PADDLE_ERROR", "simulated import failure"),
+        ):
+            with self.assertRaisesRegex(
+                ocr.OCRInitializationError,
+                "simulated import failure",
+            ):
+                ocr.get_paddle_ocr("chi_tra")
+
+    def test_dialogue_capture_is_identical_for_both_scripts(self):
+        captured = ocr.np.arange(120 * 200 * 3, dtype=ocr.np.uint8).reshape(
+            (120, 200, 3)
+        )
+        outputs = {}
+
+        for source_lang in ("chi_sim", "chi_tra"):
+            worker = object.__new__(ocr.OCRWorker)
+            worker.from_lang = source_lang
+            worker.window_hwnd = 123
+            worker.dialogue_only = True
+            worker.frame_count = 1
+
+            with patch(
+                "src.engine.window_capture.capture_window_dialogue",
+                return_value=captured.copy(),
+            ):
+                outputs[source_lang] = worker._capture_region()
+
+        ocr.np.testing.assert_array_equal(outputs["chi_sim"], captured)
+        ocr.np.testing.assert_array_equal(outputs["chi_tra"], captured)
+
+    def test_core_pipeline_has_no_script_specific_branches(self):
+        for method in (
+            ocr.OCRWorker._run_loop,
+            ocr.OCRWorker._capture_region,
+            ocr.OCRWorker._process_translation,
+        ):
+            with self.subTest(method=method.__name__):
+                self.assertNotIn("chi_tra", inspect.getsource(method))
 
     def test_ocr_inference_uses_the_paddleocr_3x_prediction_api(self):
         worker = object.__new__(ocr.OCRWorker)

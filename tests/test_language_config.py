@@ -69,7 +69,7 @@ class LanguageConfigTests(unittest.TestCase):
 
     def test_paddle_language_mapping(self):
         self.assertEqual(get_paddle_lang("chi_sim"), "ch")
-        self.assertEqual(get_paddle_lang("chi_tra"), "chinese_cht")
+        self.assertEqual(get_paddle_lang("chi_tra"), "ch")
 
     def test_cache_key_separates_source_languages(self):
         text = "\u937e\u96e2"

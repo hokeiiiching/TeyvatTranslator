@@ -311,10 +311,9 @@ class MainWindow(QMainWindow):
             return
         source_lang = self._selected_source_lang()
         self.lang_info.setText(f"{get_source_label(source_lang)}  ->  English")
-        if source_lang == "chi_tra":
-            from src.engine.ocr import preload_ocr
+        from src.engine.ocr import preload_ocr
 
-            preload_ocr(source_lang)
+        preload_ocr(source_lang)
     
     def _refresh_window_list(self) -> None:
         """Refresh the list of available windows."""
@@ -505,7 +504,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(name)
         
         # Version
-        version = QLabel("v1.1.0")
+        version = QLabel("v1.1.1")
         version.setObjectName("subtitle")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)

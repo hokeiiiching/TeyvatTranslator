@@ -11,9 +11,10 @@ pyperclip>=1.8.2
 pywin32>=306; sys_platform == "win32"
 
 # OCR Engine
-# The OCR integration uses the PaddleOCR 3.x pipeline API and PaddlePaddle 3.x.
-paddlepaddle>=3.0.0,<4.0.0
-paddleocr>=3.0.0,<4.0.0
+# Keep the verified shared Chinese profile stable across release builds.
+# PaddleOCR 3.7.0's PP-OCRv6 profile recognizes Simplified and Traditional.
+paddlepaddle==3.3.1
+paddleocr==3.7.0
 
 pypinyin>=0.50.0
 opencc-python-reimplemented>=0.1.7

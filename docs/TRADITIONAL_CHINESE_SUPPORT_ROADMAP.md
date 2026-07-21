@@ -4,11 +4,17 @@ This roadmap is the required implementation plan for adding Traditional Chinese 
 
 ## Current Status
 
-Implemented with automated parity coverage as of 2026-07-21. The tests cover
-source selection, per-script OCR model routing, original Traditional display
-text, pinyin/context handoff, OpenCC normalization across all curated vocabulary
-terms, source-aware translation caches, Marian/Google input behavior, font
-fallbacks, preflight errors, and frozen-build OpenCC data collection.
+Corrected with automated and real-model parity coverage as of 2026-07-22. A
+live v1.1.0 test exposed that the first implementation did not preserve the
+Simplified flow: Traditional mode started a second OCR instance, cropped the
+capture again, bypassed the standard stability gate, and parsed lines through a
+special branch. Those divergences have been removed.
+
+With the pinned PaddleOCR 3.7.0 release, both app modes now use the same verified
+PP-OCRv6 `ch` profile and the same OCR instance. That profile recognizes both
+scripts. Traditional-specific behavior begins only after OCR: the original text
+is preserved for display and pinyin, while OpenCC creates a private Simplified
+copy for curated vocabulary and Marian lookup.
 
 A Windows release candidate must still complete the manual in-game and packaged
 installer checks in Phase 9 before release. Those checks require Genshin Impact,
@@ -22,7 +28,7 @@ Support Genshin Impact running in Traditional Chinese while preserving the exist
 The finished feature must:
 
 - Let the user choose Simplified or Traditional Chinese before starting capture.
-- Use the correct PaddleOCR recognition model for the selected source script.
+- Use the same verified Traditional-capable PaddleOCR profile for both scripts.
 - Display the original OCR text exactly as captured.
 - Generate pinyin for the captured Chinese text.
 - Translate Traditional Chinese dialogue to English.
@@ -39,7 +45,10 @@ Do not rewrite the OCR, RAG, or translation architecture unless a smaller compat
 
 Do not fix unrelated mojibake or copy text issues unless they block this feature directly.
 
-## Pre-Implementation Findings
+## Historical Pre-Implementation Findings
+
+The model-routing assumptions in this section were superseded by the real-model
+verification above. They are retained only as implementation history.
 
 Relevant existing code:
 
@@ -50,7 +59,7 @@ Relevant existing code:
 - `src/engine/ocr.py`
   - `OCRWorker.OCR_TO_TRANSLATE` already maps `chi_tra` to `zh-TW`.
   - Global PaddleOCR initialization currently uses `PaddleOCR(lang='ch', ...)`, which is Simplified Chinese oriented.
-  - `get_paddle_ocr()` returns one shared OCR instance, so it cannot safely serve both Simplified and Traditional models without refactoring.
+  - The original plan assumed a shared OCR instance could not serve both scripts; real PaddleOCR 3.7.0 verification later disproved that assumption.
   - Speaker detection, descriptor detection, pinyin generation, RAG lookup, translation cache, and display update all happen in `_process_translation()`.
 - `src/engine/rag.py`, `src/engine/context.py`, and `src/data/database.py`
   - Vocabulary lookup is based on the `mandarin` field, which is stored in Simplified Chinese.
@@ -69,16 +78,19 @@ opencc-python-reimplemented>=0.1.7
 
 Use it via `OpenCC('t2s')` for Traditional-to-Simplified normalization. If a different OpenCC package is chosen, document the import and conversion API in this file before implementation continues.
 
-PaddleOCR language codes must be verified against the installed PaddleOCR version before coding the model selector. Expected mapping:
+PaddleOCR language codes must be verified against the installed PaddleOCR version before coding the model selector. Verified mapping for the pinned release:
 
 ```python
 {
     "chi_sim": "ch",
-    "chi_tra": "chinese_cht",
+    "chi_tra": "ch",
 }
 ```
 
-If the installed version rejects `chinese_cht`, stop and document the actual supported language code before changing production code.
+PaddleOCR 3.7.0 resolves both language options to the same PP-OCRv6 Chinese
+detection and recognition models. The `ch` profile was directly verified to
+recognize `鍾離：風與龍的冒險。`; keep the dependency pinned and rerun the real
+OCR smoke before changing this mapping.
 
 ## Strict Implementation Phases
 
@@ -127,7 +139,7 @@ _global_paddle_ocr = PaddleOCR(lang='ch', ...)
 
 Required behavior:
 
-- Store OCR instances in a dictionary keyed by PaddleOCR language code.
+- Store OCR instances in a dictionary keyed by PaddleOCR profile.
 - Keep lazy loading.
 - Keep warmup behavior.
 - Keep existing PaddleOCR performance flags:
@@ -135,7 +147,7 @@ Required behavior:
   - `use_doc_unwarping=False`
   - `use_textline_orientation=False`
 - Pass `self.from_lang` through to the OCR getter.
-- The selected source language must determine the PaddleOCR model.
+- Both selected Chinese scripts must resolve to the shared `ch` profile.
 
 Recommended function shape:
 
@@ -147,9 +159,9 @@ def get_paddle_ocr(source_lang: str = "chi_sim"):
 
 Important:
 
-- Do not silently reuse a Simplified OCR instance for Traditional Chinese.
-- Do not break `preload_ocr()`. Either preload only the default Simplified model or update it to accept a source language.
-- If multiple OCR models are loaded, make thread locking language-aware.
+- Reuse is intentional only because the pinned model was tested with Traditional text.
+- Do not break `preload_ocr()`; selecting either script must address the same initialization thread and instance.
+- Do not add script-specific capture, filtering, stability, or parsing branches.
 
 ### Phase 4: Add Source Language UI
 
@@ -246,7 +258,7 @@ Minimum tests:
 - A Traditional term such as `\u937e\u96e2` normalizes to the Simplified vocabulary form `\u949f\u79bb`.
 - A Traditional phrase containing punctuation and line breaks keeps the same rough structure after normalization.
 - `get_paddle_lang("chi_sim") == "ch"`.
-- `get_paddle_lang("chi_tra") == "chinese_cht"` or the verified installed-code equivalent.
+- `get_paddle_lang("chi_tra") == "ch"` for the pinned, verified shared profile.
 - RAG or keyword lookup can find a Simplified vocabulary entry when given normalized Traditional input.
 - Cache key construction separates `chi_sim` and `chi_tra`.
 
@@ -260,7 +272,7 @@ Run these checks before declaring the feature complete:
 2. Confirm the default source language is Chinese (Simplified).
 3. Start capture with Simplified selected and verify existing behavior still works.
 4. Switch source language to Chinese (Traditional).
-5. Confirm logs show PaddleOCR using the Traditional model.
+5. Confirm logs show both modes reusing the same ready `ch` OCR profile.
 6. Capture Traditional Chinese Genshin dialogue.
 7. Confirm displayed Chinese remains Traditional.
 8. Confirm pinyin appears above characters.
@@ -300,7 +312,7 @@ Do not leave old comments saying the app is fixed to Simplified Chinese once thi
 ## Suggested Commit Breakdown
 
 1. Add language config and OpenCC dependency with tests.
-2. Refactor PaddleOCR model selection by source language.
+2. Verify and share the Traditional-capable PaddleOCR profile across both modes.
 3. Add UI selector and pass selected source language to `OCRWorker`.
 4. Normalize lookup paths in OCR processing and RAG/speaker matching.
 5. Update cache keying and tests.

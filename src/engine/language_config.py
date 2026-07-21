@@ -34,7 +34,10 @@ SOURCE_LANGUAGES: Dict[str, SourceLanguage] = {
     "chi_tra": SourceLanguage(
         code="chi_tra",
         label="Chinese (Traditional)",
-        paddle_lang="chinese_cht",
+        # PaddleOCR 3.7's working Chinese profile recognizes both scripts.
+        # Reusing it keeps capture, model startup, OCR, and filtering identical
+        # to Simplified Chinese; only lookup normalization differs below.
+        paddle_lang="ch",
         translate_locale="zh-TW",
         normalize_lookup=True,
     ),

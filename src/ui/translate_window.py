@@ -273,6 +273,14 @@ class TranslateWindow(QMainWindow):
             worker: The OCRWorker instance.
         """
         self.worker = worker
+
+    def update_status(self, message: str) -> None:
+        """Display OCR startup, ready, or failure state from the worker thread."""
+        QMetaObject.invokeMethod(
+            self.english_label, "setText",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, message)
+        )
         
     def update_translation(
         self, 

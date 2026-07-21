@@ -51,11 +51,26 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
+      - name: Run real Simplified and Traditional OCR parity smoke
+        env:
+          TEYVAT_REAL_OCR_SMOKE: "1"
+        run: python -m unittest tests.test_real_ocr_model_parity -v
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress --yes
 
       - name: Build installer
         run: python build.py --clean --installer
+
+      - name: Run frozen Windows OCR parity smoke
+        shell: pwsh
+        run: |
+          & .\dist\TeyvatTranslator\TeyvatTranslator.exe --ocr-smoke
+          $smokeExitCode = $LASTEXITCODE
+          Get-Content .\dist\TeyvatTranslator\TeyvatTranslator.log
+          if ($smokeExitCode -ne 0) {
+            throw "Frozen OCR parity smoke failed with exit code $smokeExitCode"
+          }
 
       - name: Generate checksum
         shell: pwsh

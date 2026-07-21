@@ -12,11 +12,11 @@ class TraditionalPackagingTests(unittest.TestCase):
         self.assertIn("collect_data_files('opencc')", spec_text)
         self.assertIn("'opencc'", spec_text)
 
-    def test_declared_ocr_versions_match_the_3x_api_used_by_the_app(self):
+    def test_declared_ocr_versions_match_the_verified_shared_profile(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
-        self.assertIn("paddlepaddle>=3.0.0,<4.0.0", requirements)
-        self.assertIn("paddleocr>=3.0.0,<4.0.0", requirements)
+        self.assertIn("paddlepaddle==3.3.1", requirements)
+        self.assertIn("paddleocr==3.7.0", requirements)
 
     def test_windows_only_capture_dependency_has_a_platform_marker(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")

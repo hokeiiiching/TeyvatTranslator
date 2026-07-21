@@ -33,6 +33,9 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
         refresh_patch = patch.object(main_window.MainWindow, "_refresh_window_list")
         refresh_patch.start()
         self.addCleanup(refresh_patch.stop)
+        preload_patch = patch("src.engine.ocr.preload_ocr")
+        preload_patch.start()
+        self.addCleanup(preload_patch.stop)
         self.window = main_window.MainWindow()
         self.addCleanup(self.window.close)
 
@@ -45,6 +48,16 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
         self.assertEqual(self.window._selected_source_lang(), "chi_tra")
         self.assertIn("Chinese (Traditional)", self.window.lang_info.text())
         preload_ocr.assert_called_once_with("chi_tra")
+
+    def test_both_script_buttons_use_the_same_preload_flow(self):
+        with patch("src.engine.ocr.preload_ocr") as preload_ocr:
+            self.window.source_lang_buttons["chi_tra"].click()
+            self.window.source_lang_buttons["chi_sim"].click()
+
+        self.assertEqual(
+            [call.args for call in preload_ocr.call_args_list],
+            [("chi_tra",), ("chi_sim",)],
+        )
 
     def test_selected_traditional_code_reaches_the_ocr_worker(self):
         self.window.source_lang_buttons["chi_tra"].setChecked(True)
