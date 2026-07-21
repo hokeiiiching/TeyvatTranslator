@@ -4,7 +4,7 @@
 
 **Learn Mandarin through Genshin Impact**
 
-I wanted to improve my spoken and written (simplified) chinese.
+I wanted to improve my spoken and written (simplified) (and now traditional!) chinese.
 I like playing Genshin Impact.
 
 So I built this.
