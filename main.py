@@ -9,7 +9,7 @@ capture, intelligent vocabulary matching, and enhanced translation display.
 
 Author: hokeiiiching
 License: MIT
-Version: 1.0.0
+Version: 1.1.0
 """
 
 import os
@@ -120,7 +120,7 @@ def main() -> None:
     # Create application instance
     app = QApplication(sys.argv)
     app.setApplicationName("Genshin Translator")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("1.1.0")
     app.setOrganizationName("GenshinTranslator")
     
     # Start OCR pre-initialization in background (reduces wait time on first translation)

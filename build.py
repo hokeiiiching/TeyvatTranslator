@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Build configuration
 APP_NAME = "TeyvatTranslator"
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 BUILD_DIR = Path("build")
 DIST_DIR = Path("dist")
 SPEC_FILE = Path("TeyvatTranslator.spec")
@@ -30,7 +30,7 @@ def run_command(cmd: list[str], description: str) -> bool:
     print(f"{'='*60}")
     print(f"Running: {' '.join(cmd)}\n")
     
-    result = subprocess.run(cmd, shell=True)
+    result = subprocess.run(cmd, shell=False)
     
     if result.returncode != 0:
         print(f"\nFailed: {description}")

@@ -19,7 +19,7 @@ Non-GitHub download page: https://teyvattranslator.vercel.app/
 
 ## Download
 
-**[Download TeyvatTranslator (Windows)](https://github.com/hokeiiiching/TeyvatTranslator/releases/latest)**
+**[Download TeyvatTranslator (Windows)](https://github.com/kaseyho/TeyvatTranslator/releases/latest)**
 
 ### How to Use
 
@@ -85,7 +85,7 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) (free).
 python build.py --clean --installer
 ```
 
-Output: `dist/TeyvatTranslator-v1.0.0-Setup.exe`
+Output: `dist/TeyvatTranslator-v1.1.0-Setup.exe`
 
 </details>
 
