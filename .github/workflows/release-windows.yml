@@ -65,11 +65,17 @@ jobs:
       - name: Run frozen Windows OCR parity smoke
         shell: pwsh
         run: |
-          & .\dist\TeyvatTranslator\TeyvatTranslator.exe --ocr-smoke
-          $smokeExitCode = $LASTEXITCODE
-          Get-Content .\dist\TeyvatTranslator\TeyvatTranslator.log
-          if ($smokeExitCode -ne 0) {
-            throw "Frozen OCR parity smoke failed with exit code $smokeExitCode"
+          $process = Start-Process `
+            -FilePath ".\dist\TeyvatTranslator\TeyvatTranslator.exe" `
+            -ArgumentList "--ocr-smoke" `
+            -Wait `
+            -PassThru
+          $logPath = ".\dist\TeyvatTranslator\TeyvatTranslator.log"
+          if (Test-Path $logPath) {
+            Get-Content $logPath
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Frozen OCR parity smoke failed with exit code $($process.ExitCode)"
           }
 
       - name: Generate checksum
