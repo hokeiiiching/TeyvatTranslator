@@ -17,6 +17,11 @@ from PyQt6.QtGui import QFont, QCursor
 import pyperclip
 
 
+CHINESE_HTML_FONT_FAMILY = (
+    "HYWenHei-85W, Microsoft JhengHei, Microsoft YaHei, Noto Sans CJK TC"
+)
+
+
 class TranslateWindow(QMainWindow):
     """
     Floating overlay window for displaying translations.
@@ -298,7 +303,7 @@ class TranslateWindow(QMainWindow):
                 f'<div style="margin-bottom: 10px;">'
                 # Line 1: Mandarin name (large, golden, Genshin font)
                 f'<div style="margin-bottom: 2px;">'
-                f'<span style="color: #c9a962; font-size: 20px; font-family: HYWenHei-85W, Microsoft YaHei; font-weight: bold;">{speaker}</span>'
+                f'<span style="color: #c9a962; font-size: 20px; font-family: {CHINESE_HTML_FONT_FAMILY}; font-weight: bold;">{speaker}</span>'
                 f'</div>'
                 # Line 2: Pinyin
                 f'<div style="margin-bottom: 2px;">'
@@ -315,7 +320,7 @@ class TranslateWindow(QMainWindow):
                     f'<div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(201, 169, 98, 0.15);">'
                     # Descriptor Chinese (same size as dialogue)
                     f'<div style="margin-bottom: 2px;">'
-                    f'<span style="color: #c9a962; font-size: 18px; font-family: HYWenHei-85W, Microsoft YaHei;">{descriptor}</span>'
+                    f'<span style="color: #c9a962; font-size: 18px; font-family: {CHINESE_HTML_FONT_FAMILY};">{descriptor}</span>'
                     f'</div>'
                     # Descriptor English translation
                     f'<div>'
@@ -340,7 +345,7 @@ class TranslateWindow(QMainWindow):
                     py = pinyin_parts[pinyin_idx] if pinyin_idx < len(pinyin_parts) else ''
                     pinyin_idx += 1
                     pinyin_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:13px; color:#7eb8c9; font-family:Consolas;">{py}</span></td>')
-                    char_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:24px; color:#c9a962; font-family:HYWenHei-85W, Microsoft YaHei;">{char}</span></td>')
+                    char_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:24px; color:#c9a962; font-family:{CHINESE_HTML_FONT_FAMILY};">{char}</span></td>')
                 else:
                     # Punctuation - empty pinyin cell, punctuation in char cell
                     pinyin_cells.append(f'<td align="center" style="padding: 0 1px;"><span style="font-size:13px;">&nbsp;</span></td>')
@@ -356,7 +361,7 @@ class TranslateWindow(QMainWindow):
                 f'</div>'
             )
         else:
-            dialogue_html = f'<div style="color: #c9a962; font-size: 24px; font-family: HYWenHei-85W, Microsoft YaHei; padding: 10px 0;">{chinese or ""}</div>'
+            dialogue_html = f'<div style="color: #c9a962; font-size: 24px; font-family: {CHINESE_HTML_FONT_FAMILY}; padding: 10px 0;">{chinese or ""}</div>'
         
         # Store for copy function
         self.chinese_label.setText(chinese or "")
@@ -493,4 +498,3 @@ class TranslateWindow(QMainWindow):
         if self.worker:
             self.worker.stop()
         event.accept()
-

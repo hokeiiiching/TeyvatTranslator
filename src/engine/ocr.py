@@ -264,7 +264,7 @@ def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
             warmup_img.fill(255)
             warmup_img[40:60, 50:250] = 0
         
-        _ = ocr.ocr(warmup_img)
+        _ = ocr.predict(warmup_img)
         logger.info(f"PaddleOCR warmup complete for '{paddle_lang}'")
         logger.info(f"PaddleOCR ready: {paddle_lang}")
         with _ocr_init_lock:
@@ -994,7 +994,7 @@ class OCRWorker:
         
         # === Run OCR on the preprocessed image ===
         # Note: cls argument removed - deprecated in newer PaddleOCR versions
-        result = self.paddle_ocr.ocr(ocr_image)
+        result = self.paddle_ocr.predict(ocr_image)
         
         # === Handle empty results ===
         if not result or not result[0]:

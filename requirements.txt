@@ -8,11 +8,12 @@ deep_translator>=1.11.4
 pyttsx3>=2.90
 google-generativeai>=0.3.0
 pyperclip>=1.8.2
-pywin32>=306
+pywin32>=306; sys_platform == "win32"
 
 # OCR Engine
-paddlepaddle>=2.5.0
-paddleocr>=2.7.0
+# The OCR integration uses the PaddleOCR 3.x pipeline API and PaddlePaddle 3.x.
+paddlepaddle>=3.0.0,<4.0.0
+paddleocr>=3.0.0,<4.0.0
 
 pypinyin>=0.50.0
 opencc-python-reimplemented>=0.1.7

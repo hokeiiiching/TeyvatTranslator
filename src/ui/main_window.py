@@ -24,7 +24,9 @@ from .region_selector import RegionSelector
 from .translate_window import TranslateWindow
 from src.engine.language_config import (
     SOURCE_LANGUAGE_OPTIONS,
+    TraditionalChineseSupportError,
     get_source_label,
+    validate_source_language_support,
 )
 from src.engine.ocr import OCRWorker
 
@@ -593,6 +595,16 @@ class MainWindow(QMainWindow):
         # Source language comes from the selected Chinese script.
         from_lang = self._selected_source_lang()
         to_lang = "eng"
+
+        try:
+            validate_source_language_support(from_lang)
+        except TraditionalChineseSupportError as exc:
+            QMessageBox.critical(
+                self,
+                "Traditional Chinese Support Unavailable",
+                str(exc),
+            )
+            return
         
         # Close existing translate window if open
         if self.translate_window:
@@ -610,8 +622,6 @@ class MainWindow(QMainWindow):
         # Start OCR worker thread
         if selected_window:
             # Window-based capture mode
-            from src.engine.ocr import OCRWorker
-            
             # For window capture, we pass the window handle and use full window
             # The OCR worker will need to support window capture mode
             hwnd = selected_window['hwnd']
@@ -680,4 +690,3 @@ class MainWindow(QMainWindow):
         if self.translate_window:
             self.translate_window.close()
         event.accept()
-

@@ -2,6 +2,19 @@
 
 This roadmap is the required implementation plan for adding Traditional Chinese support. Future AI agents must follow it strictly, in order, and must not ship a partial implementation that only changes the UI label or only switches the OCR model.
 
+## Current Status
+
+Implemented with automated parity coverage as of 2026-07-21. The tests cover
+source selection, per-script OCR model routing, original Traditional display
+text, pinyin/context handoff, OpenCC normalization across all curated vocabulary
+terms, source-aware translation caches, Marian/Google input behavior, font
+fallbacks, preflight errors, and frozen-build OpenCC data collection.
+
+A Windows release candidate must still complete the manual in-game and packaged
+installer checks in Phase 9 before release. Those checks require Genshin Impact,
+the downloaded PaddleOCR models, and the Windows capture stack and cannot be
+substituted by the unit suite.
+
 ## Goal
 
 Support Genshin Impact running in Traditional Chinese while preserving the existing Simplified Chinese workflow.

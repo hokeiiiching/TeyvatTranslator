@@ -26,7 +26,7 @@ QMainWindow {
 }
 
 QWidget {
-    font-family: 'HYWenHei-85W', 'HYWenHei', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    font-family: 'HYWenHei-85W', 'HYWenHei', 'Microsoft JhengHei', 'Microsoft YaHei', 'Noto Sans CJK TC', 'Segoe UI', sans-serif;
     font-size: 10pt;
     color: #f0f0f0;
 }
@@ -87,7 +87,7 @@ QLabel#chinese {
     font-size: 32pt;
     font-weight: 600;
     color: #c9a962;
-    font-family: 'HYWenHei-85W', 'HYWenHei', 'Microsoft YaHei', sans-serif;
+    font-family: 'HYWenHei-85W', 'HYWenHei', 'Microsoft JhengHei', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
 }
 
 QLabel#pinyin {

@@ -28,16 +28,20 @@ This document explains the Genshin Translator codebase architecture for develope
 - `TimingStats`: Performance profiling for each frame.
 
 **Flow**:
-1. Capture dialogue region from game window
-2. Run PaddleOCR text extraction  
-3. Filter low-confidence results
-4. Detect speaker name vs dialogue text
-5. Trigger translation and UI update
+1. Read the selected source script (`chi_sim` or `chi_tra`)
+2. Capture the dialogue region from the game window
+3. Run the matching PaddleOCR language route (`ch` or `chinese_cht`)
+4. Keep the captured text unchanged for display and pinyin
+5. Normalize a private Traditional-to-Simplified copy with OpenCC for vocabulary lookup
+6. Detect speaker name vs dialogue text
+7. Trigger translation and UI update with a source-aware cache key
 
 **Important Implementation Details**:
 - PaddleOCR is lazily loaded on first use (faster startup)
+- Simplified and Traditional OCR instances are cached separately
 - A warmup pass runs on initialization to ensure first-frame accuracy
 - Dialogue detection compares lines to avoid redundant translations
+- Missing Traditional conversion data is caught before capture starts rather than silently degrading lookup accuracy
 
 ---
 

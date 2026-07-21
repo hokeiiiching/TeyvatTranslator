@@ -8,6 +8,10 @@ from functools import lru_cache
 from typing import Dict, Tuple
 
 
+class TraditionalChineseSupportError(RuntimeError):
+    """Raised when required Traditional Chinese conversion data is unavailable."""
+
+
 @dataclass(frozen=True)
 class SourceLanguage:
     """Supported source language metadata."""
@@ -71,44 +75,36 @@ def _get_t2s_converter():
         from opencc import OpenCC
 
         return OpenCC("t2s")
-    except ImportError:
-        return None
+    except Exception as exc:
+        raise TraditionalChineseSupportError(
+            "Traditional Chinese support requires OpenCC and its conversion "
+            "dictionaries. Reinstall TeyvatTranslator. Developers can run "
+            "'pip install opencc-python-reimplemented>=0.1.7'."
+        ) from exc
 
 
-_T2S_FALLBACK_MAP = str.maketrans(
-    {
-        "\u937e": "\u949f",
-        "\u96e2": "\u79bb",
-        "\u6d3e": "\u6d3e",
-        "\u8499": "\u8499",
-        "\u8aaa": "\u8bf4",
-        "\u5192": "\u5192",
-        "\u96aa": "\u9669",
-        "\u5bb6": "\u5bb6",
-        "\u5354": "\u534f",
-        "\u6703": "\u4f1a",
-        "\u9f8d": "\u9f99",
-        "\u98a8": "\u98ce",
-        "\u706b": "\u706b",
-        "\u6c34": "\u6c34",
-        "\u96f7": "\u96f7",
-        "\u51b0": "\u51b0",
-        "\u5ca9": "\u5ca9",
-        "\u8349": "\u8349",
-        "\u5143": "\u5143",
-        "\u7d20": "\u7d20",
-        "\u4e4b": "\u4e4b",
-        "\u773c": "\u773c",
-        "\u528d": "\u5251",
-        "\u5f35": "\u5f20",
-        "\u958b": "\u5f00",
-        "\u95dc": "\u5173",
-        "\u9ede": "\u70b9",
-        "\u982d": "\u5934",
-        "\u968a": "\u961f",
-        "\u9577": "\u957f",
-    }
-)
+@lru_cache(maxsize=len(SOURCE_LANGUAGES))
+def validate_source_language_support(code: str) -> None:
+    """Fail early if the selected source language is not fully operational."""
+    language = get_source_language(code)
+    if not language.normalize_lookup:
+        return
+
+    try:
+        probe = _get_t2s_converter().convert("\u937e\u96e2")
+    except TraditionalChineseSupportError:
+        raise
+    except Exception as exc:
+        raise TraditionalChineseSupportError(
+            "Traditional Chinese conversion data could not be loaded. "
+            "Reinstall TeyvatTranslator."
+        ) from exc
+
+    if probe != "\u949f\u79bb":
+        raise TraditionalChineseSupportError(
+            "Traditional Chinese conversion failed its startup check. "
+            "Reinstall TeyvatTranslator."
+        )
 
 
 def normalize_for_lookup(text: str, source_lang: str) -> str:
@@ -125,11 +121,15 @@ def normalize_for_lookup(text: str, source_lang: str) -> str:
     if not language.normalize_lookup:
         return text
 
-    converter = _get_t2s_converter()
-    if converter is not None:
-        return converter.convert(text)
-
-    return text.translate(_T2S_FALLBACK_MAP)
+    validate_source_language_support(source_lang)
+    try:
+        return _get_t2s_converter().convert(text)
+    except TraditionalChineseSupportError:
+        raise
+    except Exception as exc:
+        raise TraditionalChineseSupportError(
+            "Traditional Chinese text could not be normalized for vocabulary lookup."
+        ) from exc
 
 
 def make_cache_key(source_lang: str, purpose: str, text: str) -> str:

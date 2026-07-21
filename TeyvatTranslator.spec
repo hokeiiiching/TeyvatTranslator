@@ -35,6 +35,10 @@ datas = [
 # chromadb / sentence_transformers are optional (RAG falls back to keyword search)
 datas += collect_data_files('pypinyin')
 datas += collect_data_files('paddlex')
+# OpenCC loads JSON configs and conversion dictionaries at runtime. Collecting
+# the package data explicitly keeps Traditional lookup normalization working in
+# the frozen Windows build.
+datas += collect_data_files('opencc')
 
 # Hidden imports - only what the app actually uses
 hiddenimports = [
@@ -60,6 +64,7 @@ hiddenimports = [
     # Other direct dependencies
     'pypinyin',
     'pypinyin.style',
+    'opencc',
     'deep_translator',
     'google.generativeai',
     'PIL',

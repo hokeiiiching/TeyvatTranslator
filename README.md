@@ -28,7 +28,9 @@ Non-GitHub download page: https://teyvattranslator.vercel.app/
 3. **Launch** from Start Menu or Desktop shortcut
 4. Choose Simplified or Traditional Chinese, select the Genshin Impact window, and click **Start Translation**
 
-> First launch downloads translation models (~300MB) and may take a while. This only happens once.
+> First launch downloads translation models (~300MB) and may take a while. OCR
+> model assets are also downloaded when a Chinese script is first selected;
+> current PaddleOCR releases may share those assets between scripts.
 
 ---
 
@@ -40,6 +42,10 @@ Non-GitHub download page: https://teyvattranslator.vercel.app/
 - **Genshin Vocabulary**: 700+ game-specific terms with context
 - **Offline Mode**: Works offline after first download
 - **Auto Fallback**: Falls back to Google Translate if needed
+
+Traditional Chinese uses PaddleOCR's `chinese_cht` language route. Captured text
+stays Traditional in the overlay, while OpenCC normalizes a private lookup copy
+so the same curated vocabulary and speaker names work for both scripts.
 
 ---
 
@@ -62,6 +68,10 @@ pip install -r requirements.txt
 # Run
 python main.py
 ```
+
+Traditional Chinese lookup requires `opencc-python-reimplemented`; it is
+installed by `requirements.txt` and its conversion dictionaries are included in
+the PyInstaller build.
 
 </details>
 
