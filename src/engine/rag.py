@@ -12,9 +12,14 @@ dependencies: sentence-transformers, chromadb (or faiss-cpu).
 
 from typing import List, Dict, Any, Optional
 import json
+import logging
 import os
+import time
 
 from src.data.vocabulary import VOCABULARY
+
+
+logger = logging.getLogger("RAG")
 
 # =============================================================================
 # GLOBAL RAG INSTANCE (for background pre-initialization)
@@ -28,11 +33,16 @@ def _init_rag_sync():
     global _global_rag_engine, _rag_ready
     
     try:
-        print("Initializing RAG engine in background...")
+        started = time.perf_counter()
+        logger.info("rag_initialization_started")
         _global_rag_engine = RAGEngine(use_embeddings=True)
         _rag_ready = True
+        logger.info(
+            "rag_initialization_completed elapsed_ms=%.1f",
+            (time.perf_counter() - started) * 1000,
+        )
     except Exception as e:
-        print(f"Background RAG init failed: {e}")
+        logger.exception("Background RAG init failed: %s", e)
 
 
 def preload_rag():
@@ -47,9 +57,13 @@ def preload_rag():
     
     from threading import Thread
     
-    _rag_init_thread = Thread(target=_init_rag_sync, daemon=True)
+    _rag_init_thread = Thread(
+        target=_init_rag_sync,
+        daemon=True,
+        name="RAGPreload",
+    )
     _rag_init_thread.start()
-    print("RAG background initialization started")
+    logger.info("RAG background initialization started")
 
 
 def get_rag_engine():
@@ -62,7 +76,7 @@ def get_rag_engine():
     
     # Wait for background init to complete if in progress
     if _rag_init_thread is not None and _rag_init_thread.is_alive():
-        print("Waiting for background RAG init to complete...")
+        logger.info("Waiting for background RAG init to complete")
         _rag_init_thread.join()
     
     # Return cached instance if available
@@ -111,7 +125,11 @@ class RAGEngine:
         if use_embeddings:
             self._init_embeddings()
         
-        print(f"RAG engine initialized: {len(self.vocabulary)} terms")
+        logger.info(
+            "rag_engine_ready vocabulary_terms=%s embeddings=%s",
+            len(self.vocabulary),
+            self.use_embeddings,
+        )
     
     def _load_knowledge_base(self) -> Dict[str, Any]:
         """
@@ -163,10 +181,12 @@ class RAGEngine:
             # Add vocabulary to vector store
             self._index_vocabulary()
             
-            print("Embeddings initialized")
+            logger.info("RAG embeddings initialized")
             
         except ImportError:
-            print("sentence-transformers or chromadb not installed, using keyword matching")
+            logger.info(
+                "sentence-transformers or chromadb unavailable; using keyword matching"
+            )
             self.use_embeddings = False
     
     def _index_vocabulary(self) -> None:

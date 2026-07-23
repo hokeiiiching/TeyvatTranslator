@@ -8,6 +8,7 @@ Falls back to Google Translate API on errors.
 
 import os
 import logging
+import time
 from typing import Optional
 from threading import Thread, Lock
 
@@ -55,7 +56,8 @@ def _init_marian_sync():
         return
     
     try:
-        logger.info(f"Loading MarianMT model: {MODEL_NAME}")
+        started = time.perf_counter()
+        logger.info("marian_initialization_started model=%s", MODEL_NAME)
         
         _tokenizer = MarianTokenizer.from_pretrained(MODEL_NAME)
         _model = MarianMTModel.from_pretrained(MODEL_NAME)
@@ -83,10 +85,13 @@ def _init_marian_sync():
             logger.warning(f"Warmup failed (non-critical): {warmup_err}")
         
         _marian_ready = True
-        logger.info("MarianMT ready")
+        logger.info(
+            "marian_initialization_completed elapsed_ms=%.1f",
+            (time.perf_counter() - started) * 1000,
+        )
         
     except Exception as e:
-        logger.error(f"MarianMT init failed: {e}")
+        logger.exception("MarianMT init failed: %s", e)
 
 
 def preload_translator():
@@ -102,7 +107,11 @@ def preload_translator():
     if _marian_ready or _model is not None:
         return  # Already initialized
     
-    _init_thread = Thread(target=_init_marian_sync, daemon=True)
+    _init_thread = Thread(
+        target=_init_marian_sync,
+        daemon=True,
+        name="MarianPreload",
+    )
     _init_thread.start()
     logger.info("MarianMT background initialization started")
 
@@ -135,6 +144,7 @@ def _translate_marian(text: str) -> Optional[str]:
         return None
     
     try:
+        started = time.perf_counter()
         # Tokenize and translate
         inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
         
@@ -146,10 +156,16 @@ def _translate_marian(text: str) -> Optional[str]:
         translated_ids = model.generate(**inputs, max_length=512)
         result = tokenizer.decode(translated_ids[0], skip_special_tokens=True)
         
+        logger.info(
+            "marian_translation_completed elapsed_ms=%.1f input_chars=%s output_chars=%s",
+            (time.perf_counter() - started) * 1000,
+            len(text),
+            len(result),
+        )
         return result
         
     except Exception as e:
-        logger.error(f"MarianMT translation error: {e}")
+        logger.exception("MarianMT translation error: %s", e)
         return None
 
 
@@ -159,10 +175,18 @@ def _translate_google(text: str, target: str = 'en') -> Optional[str]:
         return None
     
     try:
+        started = time.perf_counter()
         translator = GoogleTranslator(source='auto', target=target)
-        return translator.translate(text)
+        result = translator.translate(text)
+        logger.info(
+            "google_translation_completed elapsed_ms=%.1f input_chars=%s output_chars=%s",
+            (time.perf_counter() - started) * 1000,
+            len(text),
+            len(result or ""),
+        )
+        return result
     except Exception as e:
-        logger.error(f"Google Translate error: {e}")
+        logger.exception("Google Translate error: %s", e)
         return None
 
 
@@ -200,9 +224,19 @@ class Translator:
             English translation, or error message if all methods fail
         """
         if not text or not text.strip():
+            logger.debug("Translation skipped because input is blank")
             return ""
 
         offline_text = marian_text if marian_text is not None else text
+        logger.info(
+            "translate_request target=%s backend=%s input_chars=%s "
+            "marian_input_normalized=%s text=%r",
+            self.target_lang,
+            self.backend,
+            len(text),
+            offline_text != text,
+            text,
+        )
         
         # Try MarianMT first (fast, offline)
         if MARIAN_AVAILABLE and _marian_ready:
@@ -214,18 +248,26 @@ class Translator:
         # Fallback to Google Translate
         if self._google_translator:
             try:
+                started = time.perf_counter()
                 result = self._google_translator.translate(text)
                 if result:
-                    logger.debug(f"Google (fallback): {text[:20]}... → {result[:30]}...")
+                    logger.info(
+                        "google_fallback_completed elapsed_ms=%.1f "
+                        "input_chars=%s output_chars=%s",
+                        (time.perf_counter() - started) * 1000,
+                        len(text),
+                        len(result),
+                    )
                     return result
             except Exception as e:
-                logger.warning(f"Google fallback failed: {e}")
+                logger.exception("Google fallback failed: %s", e)
         
         # Last resort: try fresh Google instance
         result = _translate_google(text, self.target_lang)
         if result:
             return result
         
+        logger.error("All translation backends failed for text=%r", text)
         return "[Translation unavailable]"
     
     @property

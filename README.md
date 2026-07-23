@@ -48,6 +48,16 @@ filtering, stability, and translation flow as Simplified Chinese. Captured text
 stays Traditional in the overlay; OpenCC only normalizes a private lookup copy
 so the curated vocabulary and speaker names work for both scripts.
 
+### Diagnostics
+
+Each launch records a detailed session log plus the first three raw and
+preprocessed captures. In the app, click **Open Diagnostics** to inspect them.
+On Windows they are stored under
+`%LOCALAPPDATA%\TeyvatTranslator\diagnostics`. The log includes the selected
+script, shared OCR profile, model startup, foreground-window state, capture
+dimensions, raw OCR text and confidence, filtering decisions, translation
+backend/timing, and full exception traces.
+
 ---
 
 ## Requirements
@@ -86,7 +96,7 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) (free).
 python build.py --clean --installer
 ```
 
-Output: `dist/TeyvatTranslator-v1.1.1-Setup.exe`
+Output: `dist/TeyvatTranslator-v1.1.2-Setup.exe`
 
 </details>
 

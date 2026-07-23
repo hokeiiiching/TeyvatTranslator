@@ -154,6 +154,31 @@ class OCRLanguageParityTests(unittest.TestCase):
         ocr.np.testing.assert_array_equal(outputs["chi_sim"], captured)
         ocr.np.testing.assert_array_equal(outputs["chi_tra"], captured)
 
+    def test_focus_skip_logs_both_target_and_foreground_windows(self):
+        from src.engine import window_capture
+
+        fake_win32gui = MagicMock()
+        fake_win32gui.GetForegroundWindow.return_value = 456
+        fake_win32gui.GetWindowText.side_effect = lambda hwnd: {
+            123: "Genshin Impact",
+            456: "TeyvatTranslator",
+        }.get(hwnd, "")
+
+        with (
+            patch.object(window_capture, "HAS_WIN32", True),
+            patch.object(window_capture, "win32gui", fake_win32gui, create=True),
+            patch.object(window_capture, "_last_dialogue_capture_state", None),
+            patch.object(window_capture, "_last_dialogue_capture_log", 0.0),
+            self.assertLogs("WindowCapture", level="INFO") as captured_logs,
+        ):
+            result = window_capture.capture_window_dialogue(123)
+
+        self.assertIsNone(result)
+        log_text = "\n".join(captured_logs.output)
+        self.assertIn("target-not-foreground", log_text)
+        self.assertIn("Genshin Impact", log_text)
+        self.assertIn("TeyvatTranslator", log_text)
+
     def test_core_pipeline_has_no_script_specific_branches(self):
         for method in (
             ocr.OCRWorker._run_loop,

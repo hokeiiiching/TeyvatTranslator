@@ -7,11 +7,40 @@ Uses pywin32 to enumerate windows and capture window content.
 """
 
 import ctypes
+import logging
+import time
 from typing import Optional, List, Tuple, Dict
 from ctypes import wintypes
 
 import numpy as np
 from PIL import Image
+
+
+logger = logging.getLogger("WindowCapture")
+_last_dialogue_capture_state = None
+_last_dialogue_capture_log = 0.0
+
+
+def _window_title(hwnd: int) -> str:
+    try:
+        return win32gui.GetWindowText(hwnd) if HAS_WIN32 and hwnd else ""
+    except Exception:
+        return "<unavailable>"
+
+
+def _log_dialogue_capture_state(state: str, **details) -> None:
+    """Log state changes immediately and stable states every five seconds."""
+    global _last_dialogue_capture_state, _last_dialogue_capture_log
+    now = time.monotonic()
+    if state == _last_dialogue_capture_state and now - _last_dialogue_capture_log < 5:
+        return
+    _last_dialogue_capture_state = state
+    _last_dialogue_capture_log = now
+    logger.info(
+        "dialogue_capture state=%s %s",
+        state,
+        " ".join(f"{key}={value!r}" for key, value in details.items()),
+    )
 
 try:
     import win32gui
@@ -21,9 +50,7 @@ try:
     HAS_WIN32 = True
 except ImportError as e:
     HAS_WIN32 = False
-    import traceback
-    print(f"pywin32 not available, window capture disabled: {e}")
-    traceback.print_exc()
+    logger.exception("pywin32 not available; window capture disabled: %s", e)
 
 
 def get_window_list() -> List[Dict[str, any]]:
@@ -38,6 +65,7 @@ def get_window_list() -> List[Dict[str, any]]:
         - rect: (left, top, right, bottom) coordinates
     """
     if not HAS_WIN32:
+        logger.warning("Window enumeration requested without pywin32")
         return []
     
     windows = []
@@ -61,14 +89,19 @@ def get_window_list() -> List[Dict[str, any]]:
                             'rect': rect,
                             'size': (width, height)
                         })
-                except:
-                    pass
+                except Exception:
+                    logger.debug("Failed to inspect window hwnd=%s", hwnd, exc_info=True)
         return True
     
     win32gui.EnumWindows(enum_callback, None)
     
     # Sort by title for easier selection
     windows.sort(key=lambda w: w['title'].lower())
+    logger.info(
+        "window_enumeration count=%s titles=%r",
+        len(windows),
+        [window["title"] for window in windows[:25]],
+    )
     
     return windows
 
@@ -93,7 +126,13 @@ def find_genshin_window() -> Optional[Dict]:
     # Pass 1: Exact title match (most reliable — catches the real game window)
     for window in windows:
         if window['title'].strip().lower() in exact_titles:
-            print(f"Found Genshin window: '{window['title']}'")
+            logger.info(
+                "genshin_window_found match=exact hwnd=%s title=%r class=%r rect=%r",
+                window["hwnd"],
+                window["title"],
+                window["class_name"],
+                window["rect"],
+            )
             return window
     
     # Pass 2: Substring match, skipping browser windows
@@ -103,9 +142,16 @@ def find_genshin_window() -> Optional[Dict]:
         title_lower = window['title'].lower()
         for keyword in genshin_keywords:
             if keyword in title_lower:
-                print(f"Found Genshin window: '{window['title']}'")
+                logger.info(
+                    "genshin_window_found match=keyword hwnd=%s title=%r class=%r rect=%r",
+                    window["hwnd"],
+                    window["title"],
+                    window["class_name"],
+                    window["rect"],
+                )
                 return window
     
+    logger.warning("Genshin window not found among %s visible windows", len(windows))
     return None
 
 
@@ -158,6 +204,7 @@ def capture_window_dialogue(hwnd: int) -> Optional[np.ndarray]:
         NumPy array of dialogue region, or None on error
     """
     if not HAS_WIN32:
+        _log_dialogue_capture_state("unavailable", reason="pywin32-missing")
         return None
     
     try:
@@ -165,12 +212,27 @@ def capture_window_dialogue(hwnd: int) -> Optional[np.ndarray]:
         foreground_hwnd = win32gui.GetForegroundWindow()
         if foreground_hwnd != hwnd:
             # Target window is not in focus - skip capture
+            _log_dialogue_capture_state(
+                "target-not-foreground",
+                target_hwnd=hwnd,
+                target_title=_window_title(hwnd),
+                foreground_hwnd=foreground_hwnd,
+                foreground_title=_window_title(foreground_hwnd),
+            )
             return None
         
         # Get window position on screen
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
         window_width = right - left
         window_height = bottom - top
+        if window_width <= 0 or window_height <= 0:
+            _log_dialogue_capture_state(
+                "invalid-window-size",
+                target_hwnd=hwnd,
+                target_title=_window_title(hwnd),
+                rect=(left, top, right, bottom),
+            )
+            return None
         
         # Calculate dialogue region (relative to window)
         rx, ry, rw, rh = get_dialogue_region(window_width, window_height)
@@ -186,16 +248,38 @@ def capture_window_dialogue(hwnd: int) -> Optional[np.ndarray]:
         img = ImageGrab.grab(bbox=(screen_left, screen_top, screen_right, screen_bottom))
         
         if img is None:
+            _log_dialogue_capture_state(
+                "imagegrab-none",
+                target_hwnd=hwnd,
+                bbox=(screen_left, screen_top, screen_right, screen_bottom),
+            )
             return None
         
         img_np = np.array(img)
+        _log_dialogue_capture_state(
+            "captured",
+            target_hwnd=hwnd,
+            target_title=_window_title(hwnd),
+            window_rect=(left, top, right, bottom),
+            dialogue_region=(rx, ry, rw, rh),
+            screen_bbox=(screen_left, screen_top, screen_right, screen_bottom),
+            shape=img_np.shape,
+        )
         
         return img_np
         
     except Exception as e:
-        print(f"Dialogue capture error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(
+            "Dialogue capture error target_hwnd=%s title=%r: %s",
+            hwnd,
+            _window_title(hwnd),
+            e,
+        )
+        _log_dialogue_capture_state(
+            "exception",
+            target_hwnd=hwnd,
+            error=f"{type(e).__name__}: {e}",
+        )
         return None
 
 
@@ -272,7 +356,13 @@ def capture_window(hwnd: int, region: Optional[Tuple[int, int, int, int]] = None
         return img
         
     except Exception as e:
-        print(f"Window capture error: {e}")
+        logger.exception(
+            "Window capture error hwnd=%s title=%r region=%r: %s",
+            hwnd,
+            _window_title(hwnd),
+            region,
+            e,
+        )
         return None
 
 
@@ -292,7 +382,8 @@ def bring_window_to_front(hwnd: int) -> bool:
     try:
         win32gui.SetForegroundWindow(hwnd)
         return True
-    except:
+    except Exception:
+        logger.debug("Window liveness check failed hwnd=%s", hwnd, exc_info=True)
         return False
 
 

@@ -10,6 +10,7 @@ The primary application window featuring a tabbed interface with:
 """
 
 import ctypes
+import logging
 from typing import Optional, Tuple
 
 from PyQt6.QtWidgets import (
@@ -29,6 +30,14 @@ from src.engine.language_config import (
     validate_source_language_support,
 )
 from src.engine.ocr import OCRWorker
+from src.diagnostics import (
+    get_diagnostics_root,
+    get_log_file,
+    open_diagnostics_folder,
+)
+
+
+logger = logging.getLogger("MainWindow")
 
 
 # Language code mappings for OCR and translation
@@ -90,7 +99,7 @@ class MainWindow(QMainWindow):
             )
         except AttributeError:
             pass  # Not on Windows
-            
+
         self.setWindowTitle("Genshin Translator")
         self.setMinimumSize(680, 620)
         self.resize(720, 650)
@@ -292,6 +301,21 @@ class MainWindow(QMainWindow):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setStyleSheet("margin-top: 12px;")
         layout.addWidget(self.status_label)
+
+        diagnostics_layout = QHBoxLayout()
+        diagnostics_layout.setSpacing(10)
+        diagnostics_note = QLabel("Detailed logs and 3 sample captures are recorded each launch.")
+        diagnostics_note.setStyleSheet("color: #8080a0; font-size: 10px;")
+        diagnostics_note.setWordWrap(True)
+        diagnostics_layout.addWidget(diagnostics_note, 1)
+        self.diagnostics_btn = QPushButton("Open Diagnostics")
+        self.diagnostics_btn.setMinimumHeight(32)
+        self.diagnostics_btn.setToolTip(
+            f"Open {get_diagnostics_root()}\nCurrent log: {get_log_file()}"
+        )
+        self.diagnostics_btn.clicked.connect(self._on_open_diagnostics)
+        diagnostics_layout.addWidget(self.diagnostics_btn)
+        layout.addLayout(diagnostics_layout)
         
         layout.addStretch(1)
         return widget
@@ -325,6 +349,7 @@ class MainWindow(QMainWindow):
             
             windows = get_window_list()
             self._windows_cache = {w['title']: w for w in windows}
+            logger.info("window_list_refreshed count=%s", len(windows))
             
             for w in windows:
                 # Truncate long titles
@@ -332,7 +357,7 @@ class MainWindow(QMainWindow):
                 self.window_combo.addItem(f"{title} ({w['size'][0]}x{w['size'][1]})")
                 
         except Exception as e:
-            print(f"Could not list windows: {e}")
+            logger.exception("Could not list windows: %s", e)
             self._windows_cache = {}
     
     def _on_find_genshin(self) -> None:
@@ -346,14 +371,20 @@ class MainWindow(QMainWindow):
                 self._refresh_window_list()
                 
                 # Find and select in dropdown
-                print(f"DEBUG: Looking for '{genshin['title']}' in dropdown...")
+                logger.debug("Selecting detected Genshin window title=%r", genshin["title"])
                 for i in range(self.window_combo.count()):
                     item_text = self.window_combo.itemText(i)
-                    print(f"  [{i}] '{item_text}'")
+                    logger.debug("window_dropdown index=%s text=%r", i, item_text)
                     if genshin['title'] in item_text:
                         self.window_combo.setCurrentIndex(i)
                         self.status_label.setText(f"Found: {genshin['title']}")
                         self.status_label.setStyleSheet("color: #4ade80;")
+                        logger.info(
+                            "genshin_window_selected hwnd=%s title=%r rect=%r",
+                            genshin["hwnd"],
+                            genshin["title"],
+                            genshin["rect"],
+                        )
                         return
             
             QMessageBox.information(
@@ -363,7 +394,25 @@ class MainWindow(QMainWindow):
                 "Make sure the game is running and try again."
             )
         except Exception as e:
-            print(f"Error finding Genshin: {e}")
+            logger.exception("Error finding Genshin: %s", e)
+
+    def _on_open_diagnostics(self) -> None:
+        """Open the folder containing per-session logs and sample captures."""
+        try:
+            logger.info(
+                "open_diagnostics_requested root=%s current_log=%s",
+                get_diagnostics_root(),
+                get_log_file(),
+            )
+            open_diagnostics_folder()
+        except Exception as exc:
+            logger.exception("Could not open diagnostics folder: %s", exc)
+            QMessageBox.critical(
+                self,
+                "Could Not Open Diagnostics",
+                f"Open this folder manually:\n\n{get_diagnostics_root()}\n\n"
+                f"Current log:\n{get_log_file()}",
+            )
         
     def _create_settings_tab(self) -> QWidget:
         """
@@ -504,7 +553,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(name)
         
         # Version
-        version = QLabel("v1.1.1")
+        version = QLabel("v1.1.2")
         version.setObjectName("subtitle")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
@@ -562,6 +611,15 @@ class MainWindow(QMainWindow):
             x2, y2: Bottom-right corner coordinates
         """
         self.selected_region = (x1, y1, x2, y2)
+        logger.info(
+            "screen_region_selected bbox=(%s,%s,%s,%s) size=%sx%s",
+            x1,
+            y1,
+            x2,
+            y2,
+            x2 - x1,
+            y2 - y1,
+        )
         self.status_label.setText(f"Region selected: {x2-x1}×{y2-y1} pixels")
         self.status_label.setStyleSheet("color: #4ade80;")
         self.show()
@@ -598,6 +656,11 @@ class MainWindow(QMainWindow):
         try:
             validate_source_language_support(from_lang)
         except TraditionalChineseSupportError as exc:
+            logger.exception(
+                "source_language_validation_failed source=%s: %s",
+                from_lang,
+                exc,
+            )
             QMessageBox.critical(
                 self,
                 "Traditional Chinese Support Unavailable",
@@ -626,29 +689,34 @@ class MainWindow(QMainWindow):
             hwnd = selected_window['hwnd']
             rect = selected_window['rect']
             
-            print(f"\nUsing WINDOW capture mode")
-            print(f"  Window: {selected_window['title']}")
-            print(f"  Handle: {hwnd}")
-            print(f"  Size: {selected_window['size']}")
-            print(f"  Source language: {get_source_label(from_lang)}")
-            
             # Check if dialogue-only mode
             dialogue_only = self.dialogue_checkbox.isChecked()
-            if dialogue_only:
-                print(f"  Mode: DIALOGUE ONLY (bottom subtitle area)")
-            else:
-                print(f"  Mode: FULL WINDOW")
+            logger.info(
+                "translation_session_start mode=window capture=%s hwnd=%s "
+                "title=%r rect=%r size=%r source=%s source_label=%r target=eng",
+                "dialogue" if dialogue_only else "full",
+                hwnd,
+                selected_window["title"],
+                rect,
+                selected_window["size"],
+                from_lang,
+                get_source_label(from_lang),
+            )
             
             # Create OCR worker with window handle
-            self.ocr_worker = OCRWorker(
-                0, 0, selected_window['size'][0], selected_window['size'][1],
-                from_lang, to_lang,
-                self.translate_window,
-                False,
-                True,
-                window_hwnd=hwnd,  # Pass window handle
-                dialogue_only=dialogue_only  # Pass dialogue mode
-            )
+            try:
+                self.ocr_worker = OCRWorker(
+                    0, 0, selected_window['size'][0], selected_window['size'][1],
+                    from_lang, to_lang,
+                    self.translate_window,
+                    False,
+                    True,
+                    window_hwnd=hwnd,  # Pass window handle
+                    dialogue_only=dialogue_only  # Pass dialogue mode
+                )
+            except Exception as exc:
+                self._handle_worker_start_failure(exc, from_lang)
+                return
             
             mode_str = "dialogue" if dialogue_only else "full window"
             self.status_label.setText(
@@ -659,23 +727,61 @@ class MainWindow(QMainWindow):
             # Screen region capture mode
             x1, y1, x2, y2 = self.selected_region
             
-            print(f"\nUsing SCREEN REGION capture mode")
-            print(f"  Region: ({x1}, {y1}) to ({x2}, {y2})")
-            print(f"  Source language: {get_source_label(from_lang)}")
-            
-            self.ocr_worker = OCRWorker(
-                x1, y1, x2, y2,
-                from_lang, to_lang,
-                self.translate_window,
-                False,
-                True
+            logger.info(
+                "translation_session_start mode=screen-region "
+                "bbox=(%s,%s,%s,%s) source=%s source_label=%r target=eng",
+                x1,
+                y1,
+                x2,
+                y2,
+                from_lang,
+                get_source_label(from_lang),
             )
             
+            try:
+                self.ocr_worker = OCRWorker(
+                    x1, y1, x2, y2,
+                    from_lang, to_lang,
+                    self.translate_window,
+                    False,
+                    True
+                )
+            except Exception as exc:
+                self._handle_worker_start_failure(exc, from_lang)
+                return
+
             self.status_label.setText(f"Translation active: {get_source_label(from_lang)}")
         
-        self.translate_window.set_worker(self.ocr_worker)
-        self.ocr_worker.start()
+        try:
+            self.translate_window.set_worker(self.ocr_worker)
+            self.ocr_worker.start()
+        except Exception as exc:
+            self._handle_worker_start_failure(exc, from_lang)
+            return
         self.status_label.setStyleSheet("color: #7dd3fc;")
+        logger.info("translation_session_worker_started source=%s", from_lang)
+
+    def _handle_worker_start_failure(self, exc: Exception, source_lang: str) -> None:
+        """Make startup failures visible instead of leaving a waiting overlay."""
+        logger.exception(
+            "translation_session_start_failed source=%s error=%s: %s",
+            source_lang,
+            type(exc).__name__,
+            exc,
+        )
+        message = (
+            f"Translation could not start ({type(exc).__name__}). "
+            "Open Diagnostics for the full error."
+        )
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: #f87171;")
+        if self.translate_window:
+            self.translate_window.update_status(message)
+        QMessageBox.critical(
+            self,
+            "Translation Could Not Start",
+            f"{message}\n\nDiagnostics:\n{get_log_file()}",
+        )
         
     def closeEvent(self, event) -> None:
         """
@@ -685,6 +791,7 @@ class MainWindow(QMainWindow):
             event: The close event.
         """
         if self.ocr_worker:
+            logger.info("main_window_closing; stopping OCR worker")
             self.ocr_worker.stop()
         if self.translate_window:
             self.translate_window.close()

@@ -95,8 +95,36 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
         worker_class.assert_not_called()
         critical.assert_called_once()
 
+    def test_worker_start_failure_replaces_waiting_message_with_diagnostic_error(self):
+        self.window.source_lang_buttons["chi_tra"].setChecked(True)
+        self.window.selected_region = (10, 20, 310, 220)
+        overlay = MagicMock()
+
+        with (
+            patch.object(main_window, "validate_source_language_support"),
+            patch.object(main_window, "TranslateWindow", return_value=overlay),
+            patch.object(
+                main_window,
+                "OCRWorker",
+                side_effect=RuntimeError("simulated worker failure"),
+            ),
+            patch.object(main_window.QMessageBox, "critical") as critical,
+        ):
+            self.window._on_start_translation()
+
+        self.assertIn("could not start", self.window.status_label.text())
+        self.assertIn("RuntimeError", self.window.status_label.text())
+        overlay.update_status.assert_called_once()
+        critical.assert_called_once()
+
     def test_overlay_font_stack_includes_a_traditional_chinese_font(self):
         self.assertIn("Microsoft JhengHei", CHINESE_HTML_FONT_FAMILY)
+
+    def test_diagnostics_button_opens_the_recorded_log_folder(self):
+        with patch.object(main_window, "open_diagnostics_folder") as open_folder:
+            self.window.diagnostics_btn.click()
+
+        open_folder.assert_called_once_with()
 
 
 if __name__ == "__main__":

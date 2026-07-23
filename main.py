@@ -9,7 +9,7 @@ capture, intelligent vocabulary matching, and enhanced translation display.
 
 Author: hokeiiiching
 License: MIT
-Version: 1.1.1
+Version: 1.1.2
 """
 
 import os
@@ -55,17 +55,18 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 
-# === Log file for frozen mode (captures errors even with console=False) ===
-if getattr(sys, 'frozen', False):
-    try:
-        _log_path = os.path.join(os.path.dirname(sys.executable), 'TeyvatTranslator.log')
-        _log_file = open(_log_path, 'w', encoding='utf-8')
-        sys.stdout = _log_file
-        sys.stderr = _log_file
-        print(f"[main] Log started — exe={sys.executable}")
-        print(f"[main] APP_DIR={APP_DIR}")
-    except Exception:
-        pass  # If logging fails, continue without it
+APP_VERSION = "1.1.2"
+
+# Configure diagnostics before importing the UI and OCR stack so startup/model
+# failures are captured as well as steady-state translation activity.
+from src.diagnostics import configure_diagnostics
+
+configure_diagnostics(APP_VERSION)
+
+import logging
+
+logger = logging.getLogger("Main")
+logger.info("application_directory=%s", APP_DIR)
 
 # Set Windows AppUserModelID so the taskbar shows our icon (not the Python icon)
 try:
@@ -86,13 +87,10 @@ def run_ocr_smoke() -> int:
         from src.engine.ocr_smoke import run_real_ocr_parity_smoke
 
         recognized = run_real_ocr_parity_smoke()
-        print(f"OCR parity smoke passed: {recognized}", flush=True)
+        logger.info("OCR parity smoke passed: %s", recognized)
         return 0
     except Exception as exc:
-        import traceback
-
-        print(f"OCR parity smoke failed: {type(exc).__name__}: {exc}", flush=True)
-        traceback.print_exc()
+        logger.exception("OCR parity smoke failed: %s: %s", type(exc).__name__, exc)
         return 1
 
 
@@ -107,9 +105,9 @@ def load_stylesheet(app: QApplication) -> None:
     if os.path.exists(style_path):
         with open(style_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
-            print("Stylesheet loaded successfully")
+            logger.info("Stylesheet loaded successfully: %s", style_path)
     else:
-        print("Stylesheet not found, using default theme")
+        logger.warning("Stylesheet not found, using default theme: %s", style_path)
 
 
 def set_app_icon(app: QApplication) -> None:
@@ -136,7 +134,7 @@ def main() -> None:
     # Create application instance
     app = QApplication(sys.argv)
     app.setApplicationName("Genshin Translator")
-    app.setApplicationVersion("1.1.1")
+    app.setApplicationVersion("1.1.2")
     app.setOrganizationName("GenshinTranslator")
     
     # Start OCR pre-initialization in background (reduces wait time on first translation)
@@ -154,6 +152,7 @@ def main() -> None:
     # Create and show main window directly
     main_window = MainWindow()
     main_window.show()
+    logger.info("Main window shown; entering Qt event loop")
     
     # Start the event loop
     sys.exit(app.exec())

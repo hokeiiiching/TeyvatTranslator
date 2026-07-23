@@ -35,6 +35,12 @@ import numpy as np
 from PIL import ImageGrab, Image
 from .translator import Translator, get_translator
 from .language_config import get_paddle_lang, make_cache_key, normalize_for_lookup
+from src.diagnostics import (
+    get_capture_directory,
+    get_log_file,
+    get_session_directory,
+    get_state_directory,
+)
 
 # Auto-pinyin generation
 try:
@@ -42,7 +48,9 @@ try:
     PINYIN_AVAILABLE = True
 except ImportError:
     PINYIN_AVAILABLE = False
-    print("pypinyin not installed, pinyin will not be auto-generated")
+    logging.getLogger("OCR").exception(
+        "pypinyin not installed; pinyin will not be auto-generated"
+    )
 import pyttsx3
 
 from .rag import RAGEngine
@@ -52,12 +60,9 @@ from .ocr_config import ocr_config, ocr_diagnostics, OCRConfig
 # LOGGING CONFIGURATION
 # =============================================================================
 
-# Create debug directory (writable location — use exe's parent for frozen mode)
+# Ensure bundled DLLs (mklml.dll, mkldnn.dll, etc.) are discoverable.
 import sys as _sys
 if getattr(_sys, 'frozen', False):
-    # PyInstaller: put debug output next to the exe, not inside _internal
-    DEBUG_DIR = os.path.join(os.path.dirname(_sys.executable), "debug_output")
-    # Ensure bundled DLLs (mklml.dll, mkldnn.dll, etc.) are discoverable
     _exe_dir = os.path.dirname(_sys.executable)
     _internal_dir = os.path.join(_exe_dir, '_internal')
     for _dll_dir in [_exe_dir, _internal_dir]:
@@ -67,37 +72,11 @@ if getattr(_sys, 'frozen', False):
             os.add_dll_directory(_dll_dir)
         except (OSError, AttributeError):
             pass
-else:
-    from src.paths import BASE_DIR
-    DEBUG_DIR = os.path.join(BASE_DIR, "debug_output")
-os.makedirs(DEBUG_DIR, exist_ok=True)
 
-# Configure structured logging
-LOG_FILE = os.path.join(DEBUG_DIR, "ocr_debug.log")
-
-# Create logger
+DEBUG_DIR = str(get_capture_directory())
+LOG_FILE = str(get_log_file())
+STATE_DIR = str(get_state_directory())
 logger = logging.getLogger("OCR")
-logger.setLevel(logging.DEBUG)
-
-# File handler - detailed logs
-file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(logging.DEBUG)
-file_format = logging.Formatter(
-    '%(asctime)s | %(levelname)-8s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-file_handler.setFormatter(file_format)
-
-# Console handler - summary logs
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_format = logging.Formatter('%(message)s')
-console_handler.setFormatter(console_format)
-
-# Add handlers
-if not logger.handlers:
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
 
 
 # =============================================================================
@@ -213,9 +192,16 @@ def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
         _ocr_init_errors.pop(paddle_lang, None)
     
     try:
+        init_started = time.perf_counter()
         import paddle
         paddle.device.set_device('cpu')
-        logger.info("Using CPU mode")
+        logger.info(
+            "ocr_initialization_started requested_source=%s shared_profile=%s "
+            "device=cpu frozen=%s",
+            source_lang,
+            paddle_lang,
+            bool(getattr(_sys, "frozen", False)),
+        )
         
         logger.info(f"Initializing PaddleOCR model '{paddle_lang}'...")
         
@@ -262,7 +248,7 @@ def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
             draw = ImageDraw.Draw(warmup_pil)
             try:
                 font = ImageFont.truetype("msyh.ttc", 32)
-            except:
+            except Exception:
                 font = ImageFont.load_default()
             draw.text((20, 30), "测试文字 測試文字", fill='black', font=font)
             warmup_img = np.array(warmup_pil)
@@ -272,20 +258,30 @@ def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
             warmup_img[40:60, 50:250] = 0
         
         _ = ocr.predict(warmup_img)
-        logger.info(f"PaddleOCR warmup complete for '{paddle_lang}'")
-        logger.info(f"PaddleOCR ready: {paddle_lang}")
+        logger.info(
+            "ocr_initialization_completed shared_profile=%s requested_source=%s "
+            "elapsed_ms=%.1f",
+            paddle_lang,
+            source_lang,
+            (time.perf_counter() - init_started) * 1000,
+        )
         with _ocr_init_lock:
             _global_paddle_ocr[paddle_lang] = ocr
             _ocr_ready[paddle_lang] = True
             _ocr_init_errors.pop(paddle_lang, None)
         
     except Exception as e:
-        import traceback
         with _ocr_init_lock:
             _ocr_ready[paddle_lang] = False
             _ocr_init_errors[paddle_lang] = f"{type(e).__name__}: {e}"
-        logger.error(f"OCR init failed for '{paddle_lang}': {e}")
-        traceback.print_exc()
+        logger.exception(
+            "ocr_initialization_failed shared_profile=%s requested_source=%s "
+            "error=%s: %s",
+            paddle_lang,
+            source_lang,
+            type(e).__name__,
+            e,
+        )
 
 
 def preload_ocr(source_lang: str = "chi_sim"):
@@ -305,7 +301,12 @@ def preload_ocr(source_lang: str = "chi_sim"):
     if thread is not None and thread.is_alive():
         return
     
-    thread = Thread(target=_init_paddle_ocr_sync, args=(source_lang,), daemon=True)
+    thread = Thread(
+        target=_init_paddle_ocr_sync,
+        args=(source_lang,),
+        daemon=True,
+        name=f"OCRPreload-{paddle_lang}",
+    )
     _ocr_init_threads[paddle_lang] = thread
     thread.start()
     logger.info(f"OCR background initialization started for '{paddle_lang}'")
@@ -327,16 +328,43 @@ def get_paddle_ocr(source_lang: str = "chi_sim"):
     # Wait for background init to complete if in progress
     thread = _ocr_init_threads.get(paddle_lang)
     if thread is not None and thread.is_alive():
-        logger.info(f"Waiting for background OCR init to complete for '{paddle_lang}'...")
+        wait_started = time.perf_counter()
+        logger.info(
+            "ocr_initialization_wait_started requested_source=%s shared_profile=%s "
+            "timeout_seconds=%s",
+            source_lang,
+            paddle_lang,
+            OCR_INIT_TIMEOUT_SECONDS,
+        )
         thread.join(timeout=OCR_INIT_TIMEOUT_SECONDS)
         if thread.is_alive():
+            logger.error(
+                "ocr_initialization_wait_timed_out requested_source=%s "
+                "shared_profile=%s elapsed_ms=%.1f",
+                source_lang,
+                paddle_lang,
+                (time.perf_counter() - wait_started) * 1000,
+            )
             raise OCRInitializationError(
                 "Chinese OCR model setup timed out. Check the internet connection "
                 "and restart TeyvatTranslator."
             )
+        logger.info(
+            "ocr_initialization_wait_completed requested_source=%s "
+            "shared_profile=%s elapsed_ms=%.1f",
+            source_lang,
+            paddle_lang,
+            (time.perf_counter() - wait_started) * 1000,
+        )
     
     # Return cached instance if available
     if paddle_lang in _global_paddle_ocr:
+        logger.info(
+            "ocr_instance_reused requested_source=%s shared_profile=%s instance_id=%s",
+            source_lang,
+            paddle_lang,
+            id(_global_paddle_ocr[paddle_lang]),
+        )
         return _global_paddle_ocr[paddle_lang]
 
     init_error = _ocr_init_errors.get(paddle_lang)
@@ -358,9 +386,9 @@ def get_paddle_ocr(source_lang: str = "chi_sim"):
     )
 
 
-# Debug settings - set to False for production to reduce overhead
-DEBUG_MODE = False  # Set to True for verbose logging
-SAVE_DEBUG_IMAGES = False  # Save captured/processed images for inspection
+# Diagnostics are intentionally enabled in this patch release. Only the first
+# three successful captures and preprocessed frames are saved per session.
+SAVE_DEBUG_IMAGES = True
 
 
 # =============================================================================
@@ -539,6 +567,13 @@ class OCRWorker:
         self.current_text: Optional[str] = None
         self.frame_count = 0
         self._ocr_status_ready = False
+        self._capture_none_count = 0
+        self._consecutive_capture_misses = 0
+        self._ocr_empty_count = 0
+        self._saved_capture_count = 0
+        self._saved_preprocessed_count = 0
+        self._last_heartbeat = 0.0
+        self._last_ocr_summary = "not-run"
         
         # Thread pool for async translation (prevents blocking OCR loop)
         self._executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2)
@@ -555,51 +590,56 @@ class OCRWorker:
         self._candidate_timestamp: float = 0.0  # When candidate was first seen
         self.TEXT_STABILITY_DELAY = 0.8  # Seconds text must remain stable (800ms)
         
-        # Debug info
-        if DEBUG_MODE:
-            print(f"\n{'='*50}")
-            print(f"OCR WORKER INITIALIZATION")
-            print(f"{'='*50}")
-            if window_hwnd:
-                mode = "DIALOGUE ONLY" if dialogue_only else "FULL WINDOW"
-                print(f"  Mode: WINDOW CAPTURE ({mode})")
-                print(f"  Window handle: {window_hwnd}")
-            else:
-                print(f"  Mode: SCREEN REGION")
-                print(f"  Region: ({x1}, {y1}) to ({x2}, {y2})")
-            print(f"  Size: {x2-x1}x{y2-y1} pixels")
-            print(f"  From language: {from_lang}")
-            print(f"  To language: {to_lang}")
-            print(f"  Context matching: {enable_context}")
-            print(f"  TTS: {enable_tts}")
-            
-            # Create debug directory
-            if SAVE_DEBUG_IMAGES:
-                os.makedirs(DEBUG_DIR, exist_ok=True)
-                print(f"  Debug images: {DEBUG_DIR}")
+        mode = (
+            f"window:{'dialogue' if dialogue_only else 'full'}"
+            if window_hwnd else "screen-region"
+        )
+        logger.info(
+            "worker_created mode=%s hwnd=%s region=(%s,%s)-(%s,%s) size=%sx%s "
+            "source=%s paddle_profile=%s target=%s context=%s tts=%s "
+            "session=%s captures=%s",
+            mode,
+            window_hwnd,
+            x1,
+            y1,
+            x2,
+            y2,
+            x2 - x1,
+            y2 - y1,
+            from_lang,
+            get_paddle_lang(from_lang),
+            to_lang,
+            enable_context,
+            enable_tts,
+            get_session_directory(),
+            DEBUG_DIR,
+        )
         
         # RAG engine for context matching (lazy-loaded to prevent UI freeze)
         self._rag_engine = None  # Lazy-loaded, accessed via property
         
         # Translation cache - persistent across sessions using shelve
-        # Cache file stored in debug_output directory
+        # Cache is persistent app state, separate from disposable diagnostics.
         import shelve
         from threading import Lock
         self.CACHE_MAX_SIZE = 500  # Max entries before LRU eviction
-        self._cache_path = os.path.join(DEBUG_DIR, "translation_cache")
+        self._cache_path = os.path.join(STATE_DIR, "translation_cache")
         self._shelve_cache = None  # Lazy-loaded
         self._cache_lock = Lock()  # Thread-safe cache access
         
         # Reusable translator instance (MarianMT with Google fallback)
         self._translator = Translator(target_lang='en')
-        print(f"  Translator initialized (backend: {self._translator.backend})")
+        logger.info("translator_ready backend=%s", self._translator.backend)
         
         # PaddleOCR will be lazily initialized on first use (faster startup)
         self.paddle_ocr = None
         if PADDLE_AVAILABLE:
-            print(f"  OCR Engine: PaddleOCR ({get_paddle_lang(from_lang)}, lazy-loaded)")
+            logger.info(
+                "ocr_engine=PaddleOCR profile=%s initialization=lazy",
+                get_paddle_lang(from_lang),
+            )
         else:
-            print("  OCR Engine: NONE (PaddleOCR missing)")
+            logger.error("ocr_engine=unavailable paddle_error=%s", PADDLE_ERROR)
         
         # Initialize text-to-speech engine
         self.tts_engine = None
@@ -607,7 +647,7 @@ class OCRWorker:
             try:
                 self.tts_engine = pyttsx3.init()
             except Exception as e:
-                print(f"TTS initialization failed: {e}")
+                logger.exception("TTS initialization failed: %s", e)
     
     @property
     def enable_context(self) -> bool:
@@ -666,15 +706,38 @@ class OCRWorker:
             "Preparing Chinese OCR... Keep Genshin focused. First launch may download the OCR model."
         )
         self.running = True
-        self.thread = Thread(target=self._run_loop, daemon=True)
+        self.thread = Thread(target=self._run_loop, daemon=True, name="OCRWorker")
         self.thread.start()
-        print("OCR worker started")
+        logger.info("OCR worker thread started")
 
     def _update_status(self, message: str) -> None:
         """Show worker progress in the overlay when supported."""
+        logger.info("overlay_status=%r", message)
         update_status = getattr(getattr(self, "translate_window", None), "update_status", None)
         if callable(update_status):
             update_status(message)
+
+    def _log_heartbeat(self, state: str) -> None:
+        """Write a bounded five-second summary of the worker's current state."""
+        now = time.monotonic()
+        if now - self._last_heartbeat < 5.0:
+            return
+        self._last_heartbeat = now
+        pending = self._pending_translation is not None
+        logger.info(
+            "heartbeat state=%s frames=%s capture_misses_total=%s "
+            "capture_misses_consecutive=%s ocr_short_or_empty=%s pending_translation=%s "
+            "candidate=%r current=%r last_ocr=%s",
+            state,
+            self.frame_count,
+            self._capture_none_count,
+            self._consecutive_capture_misses,
+            self._ocr_empty_count,
+            pending,
+            self._candidate_text,
+            self.current_text,
+            self._last_ocr_summary,
+        )
         
     def stop(self) -> None:
         """Stop the OCR processing thread."""
@@ -688,13 +751,18 @@ class OCRWorker:
         if self._shelve_cache is not None:
             try:
                 self._shelve_cache.close()
-                print("Translation cache saved")
+                logger.info("Translation cache saved")
             except Exception as e:
                 # SQLite threading issue - cache was synced during writes anyway
-                print(f"Cache close skipped (thread issue): {e}")
+                logger.warning("Cache close skipped: %s", e, exc_info=True)
             finally:
                 self._shelve_cache = None
-        print("OCR worker stopped")
+        logger.info(
+            "OCR worker stopped frames=%s capture_misses=%s ocr_short_or_empty=%s",
+            self.frame_count,
+            self._capture_none_count,
+            self._ocr_empty_count,
+        )
         
     def _run_loop(self) -> None:
         """Main OCR processing loop with comprehensive timing and logging."""
@@ -721,7 +789,7 @@ class OCRWorker:
                             self._pending_translation.result()
                             logger.debug(f"[Frame {self.frame_count}] Async translation completed")
                         except Exception as e:
-                            logger.error(f"Async translation error: {e}")
+                            logger.exception("Async translation error: %s", e)
                         finally:
                             self._pending_translation = None
                             self._pending_text = None
@@ -731,8 +799,28 @@ class OCRWorker:
                     image = self._capture_region()
                 
                 if image is None:
+                    self._capture_none_count += 1
+                    self._consecutive_capture_misses += 1
+                    if self._consecutive_capture_misses == 10:
+                        if self.window_hwnd:
+                            self._update_status(
+                                "No capture: keep Genshin as the focused window. "
+                                "Open Diagnostics in the main window for details."
+                            )
+                        else:
+                            self._update_status(
+                                "Screen capture is unavailable. Open Diagnostics "
+                                "in the main window for details."
+                            )
+                    self._log_heartbeat("capture-unavailable")
                     time.sleep(0.1)  # Fast response - check 10x per second
                     continue
+                if self._consecutive_capture_misses:
+                    logger.info(
+                        "capture_recovered after_consecutive_misses=%s",
+                        self._consecutive_capture_misses,
+                    )
+                    self._consecutive_capture_misses = 0
                 
                 # === STEP 2: Extract text using PaddleOCR ===
                 with timed_operation("OCR", timing, "ocr_ms"):
@@ -740,11 +828,30 @@ class OCRWorker:
                 
                 # Skip if no meaningful text (less than 2 Chinese chars)
                 if ocr_result.chinese_chars < 2:
-                    logger.debug(
-                        f"[Frame {self.frame_count}] Skipped: only {ocr_result.chinese_chars} Chinese chars"
+                    self._ocr_empty_count += 1
+                    self._last_ocr_summary = (
+                        f"text={ocr_result.text!r} confidence={ocr_result.confidence:.3f} "
+                        f"chinese_chars={ocr_result.chinese_chars} lines={ocr_result.num_lines}"
                     )
+                    logger.debug(
+                        "[Frame %s] Skipped: only %s Chinese chars text=%r confidence=%.3f",
+                        self.frame_count,
+                        ocr_result.chinese_chars,
+                        ocr_result.text,
+                        ocr_result.confidence,
+                    )
+                    if self._ocr_empty_count == 10:
+                        self._update_status(
+                            "Capture is working, but no Chinese dialogue is recognized yet. "
+                            "Open Diagnostics to inspect the saved capture."
+                        )
+                    self._log_heartbeat("ocr-no-usable-text")
                     time.sleep(0.1)  # Fast response
                     continue
+                self._last_ocr_summary = (
+                    f"text={ocr_result.text!r} confidence={ocr_result.confidence:.3f} "
+                    f"chinese_chars={ocr_result.chinese_chars} lines={ocr_result.num_lines}"
+                )
                 
                 # === Simple duplicate check - display immediately if different ===
                 # With image preprocessing, OCR should be more stable
@@ -818,6 +925,7 @@ class OCRWorker:
                     self._process_translation, ocr_result.text
                 )
                 logger.debug(f"[Frame {self.frame_count}] Translation submitted to thread pool")
+                self._update_status("Chinese dialogue detected - translating...")
                 
                 # Note: timing.translation_ms will be 0 since we're not waiting
                 timing.translation_ms = 0.0
@@ -836,6 +944,7 @@ class OCRWorker:
                 
                 # Reset error counter on success
                 consecutive_errors = 0
+                self._log_heartbeat("translation-submitted")
                 
             except OCRInitializationError as e:
                 logger.error(f"Fatal OCR initialization error: {e}")
@@ -847,6 +956,10 @@ class OCRWorker:
                 logger.error(f"Error in frame {self.frame_count}: {type(e).__name__}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
+                self._update_status(
+                    f"Translation pipeline error: {type(e).__name__}. "
+                    "Open Diagnostics in the main window."
+                )
                 
                 # Exponential backoff on repeated errors
                 if consecutive_errors >= 3:
@@ -867,30 +980,33 @@ class OCRWorker:
                     
                     # Capture dialogue region only (bottom of screen)
                     img_np = capture_window_dialogue(self.window_hwnd)
-                    
-                    if DEBUG_MODE and self.frame_count <= 3:
-                        print(f"  Using DIALOGUE capture mode")
                 else:
                     from .window_capture import capture_window
                     
                     # Capture full window
                     img_np = capture_window(self.window_hwnd)
-                    
-                    if DEBUG_MODE and self.frame_count <= 3:
-                        print(f"  Using FULL WINDOW capture mode")
                 
                 if img_np is None:
-                    if DEBUG_MODE and self.frame_count <= 3:
-                        print(f"  Window capture returned None")
                     return None
                 
-                if DEBUG_MODE and self.frame_count <= 3:
-                    print(f"  Window capture shape: {img_np.shape}")
-                
-                if SAVE_DEBUG_IMAGES and self.frame_count <= 5:
-                    path = os.path.join(DEBUG_DIR, f"capture_{self.frame_count}.png")
+                logger.debug(
+                    "[Frame %s] window_capture mode=%s shape=%s dtype=%s min=%s max=%s",
+                    self.frame_count,
+                    "dialogue" if self.dialogue_only else "full",
+                    img_np.shape,
+                    img_np.dtype,
+                    int(img_np.min()),
+                    int(img_np.max()),
+                )
+
+                if SAVE_DEBUG_IMAGES and getattr(self, "_saved_capture_count", 0) < 3:
+                    self._saved_capture_count = getattr(self, "_saved_capture_count", 0) + 1
+                    path = os.path.join(
+                        DEBUG_DIR,
+                        f"capture_{self._saved_capture_count:02d}_frame_{self.frame_count}.png",
+                    )
                     Image.fromarray(img_np).save(path)
-                    print(f"  Saved debug image: {path}")
+                    logger.info("saved_capture_image=%s", path)
                 
                 return img_np
             
@@ -898,27 +1014,42 @@ class OCRWorker:
             img = ImageGrab.grab(bbox=(self.x1, self.y1, self.x2, self.y2))
             
             if img is None:
-                print(f"  ImageGrab returned None")
+                logger.warning("[Frame %s] ImageGrab returned None", self.frame_count)
                 return None
                 
             img_np = np.array(img)
+            logger.debug(
+                "[Frame %s] region_capture bbox=(%s,%s,%s,%s) shape=%s "
+                "dtype=%s min=%s max=%s",
+                self.frame_count,
+                self.x1,
+                self.y1,
+                self.x2,
+                self.y2,
+                img_np.shape,
+                img_np.dtype,
+                int(img_np.min()),
+                int(img_np.max()),
+            )
             
-            if DEBUG_MODE and self.frame_count <= 3:
-                print(f"  Screen capture shape: {img_np.shape}")
-                print(f"  Image dtype: {img_np.dtype}")
-                print(f"  Image min/max: {img_np.min()}/{img_np.max()}")
-            
-            if SAVE_DEBUG_IMAGES and self.frame_count <= 5:
-                path = os.path.join(DEBUG_DIR, f"capture_{self.frame_count}.png")
+            if SAVE_DEBUG_IMAGES and getattr(self, "_saved_capture_count", 0) < 3:
+                self._saved_capture_count = getattr(self, "_saved_capture_count", 0) + 1
+                path = os.path.join(
+                    DEBUG_DIR,
+                    f"capture_{self._saved_capture_count:02d}_frame_{self.frame_count}.png",
+                )
                 img.save(path)
-                print(f"  Saved debug image: {path}")
+                logger.info("saved_capture_image=%s", path)
             
             return img_np
             
         except Exception as e:
-            print(f"  Capture error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(
+                "[Frame %s] Capture error: %s: %s",
+                self.frame_count,
+                type(e).__name__,
+                e,
+            )
             return None
         
     def _extract_text(self, image: np.ndarray) -> OCRResult:
@@ -986,13 +1117,24 @@ class OCRWorker:
         ocr_image = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
         
         # Save preprocessed image for debugging (first few frames only)
-        if SAVE_DEBUG_IMAGES and self.frame_count <= 3:
+        if (
+            SAVE_DEBUG_IMAGES
+            and getattr(self, "_saved_preprocessed_count", 0)
+            < getattr(self, "_saved_capture_count", 0)
+            and getattr(self, "_saved_preprocessed_count", 0) < 3
+        ):
             from PIL import Image
-            debug_path = os.path.join(DEBUG_DIR, f"preprocessed_{self.frame_count}.png")
+            self._saved_preprocessed_count = (
+                getattr(self, "_saved_preprocessed_count", 0) + 1
+            )
+            debug_path = os.path.join(
+                DEBUG_DIR,
+                f"preprocessed_{self._saved_preprocessed_count:02d}_frame_{self.frame_count}.png",
+            )
             # Convert BGR back to RGB for saving
             preprocessed_rgb = cv2.cvtColor(ocr_image, cv2.COLOR_BGR2RGB)
             Image.fromarray(preprocessed_rgb).save(debug_path)
-            logger.debug(f"  Saved preprocessed image: {debug_path}")
+            logger.info("saved_preprocessed_image=%s", debug_path)
         
         # === Run OCR on the preprocessed image ===
         # Note: cls argument removed - deprecated in newer PaddleOCR versions
@@ -1243,10 +1385,13 @@ class OCRWorker:
         
     def _process_translation(self, text: str) -> None:
         """Process text and update translation window with speaker info."""
-        if DEBUG_MODE:
-            print(f"\n{'='*50}")
-            print(f"TRANSLATING: '{text}'")
-            print(f"{'='*50}")
+        translation_started = time.perf_counter()
+        logger.info(
+            "translation_started source=%s backend=%s raw_text=%r",
+            self.from_lang,
+            getattr(getattr(self, "_translator", None), "backend", "test-or-unknown"),
+            text,
+        )
         
         text_original = text
         text_lookup = normalize_for_lookup(text_original, self.from_lang)
@@ -1303,9 +1448,9 @@ class OCRWorker:
                     dialogue_lines = [l.strip() for l in remaining_lines if l.strip()]
                 
                 dialogue = '\n'.join(dialogue_lines).strip()
-                print(f"  Detected speaker: {speaker}")
+                logger.info("speaker_detected=%r", speaker)
                 if descriptor:
-                    print(f"  NPC descriptor: {descriptor}")
+                    logger.info("npc_descriptor=%r", descriptor)
         
         speaker_lookup = normalize_for_lookup(speaker, self.from_lang)
         descriptor_lookup = normalize_for_lookup(descriptor, self.from_lang)
@@ -1348,7 +1493,7 @@ class OCRWorker:
                             logger.debug(f"  No exact match. First result mandarin: '{matches[0].get('mandarin', '')}' vs speaker lookup: '{speaker_lookup}'")
             except Exception as e:
                 context['speaker'] = speaker
-                logger.debug(f"  Speaker pinyin failed: {e}")
+                logger.exception("Speaker pinyin failed: %s", e)
         
         # Generate pinyin for dialogue - ONLY for Chinese characters
         # This ensures pinyin list aligns with display code that only assigns pinyin to Chinese chars
@@ -1363,7 +1508,7 @@ class OCRWorker:
                 else:
                     context['pinyin'] = ''
             except Exception as e:
-                logger.debug(f"  Pinyin generation failed: {e}")
+                logger.exception("Pinyin generation failed: %s", e)
         
         # Translate descriptor (NPC title/affiliation) if present
         if descriptor:
@@ -1400,14 +1545,14 @@ class OCRWorker:
                 context['descriptor_english'] = descriptor_english
             except Exception as e:
                 context['descriptor_english'] = ''
-                logger.debug(f"  Descriptor translation failed: {e}")
+                logger.exception("Descriptor translation failed: %s", e)
         
         # RAG for exact vocabulary matches only
         if self.enable_context and self.rag_engine and len(dialogue_lookup) <= 10:
             matches = self.rag_engine.get_context(dialogue_lookup)
             if matches and matches[0].get('mandarin', '') == dialogue_lookup:
                 translated = matches[0].get('english', '')
-                print(f"  RAG exact match: {translated}")
+                logger.info("rag_exact_match translation=%r", translated)
         
         # Fall back to translation (check cache first)
         if not translated:
@@ -1427,6 +1572,16 @@ class OCRWorker:
         
         # Update the display window
         self.translate_window.update_translation(dialogue, translated, context)
+        logger.info(
+            "translation_completed elapsed_ms=%.1f source=%s dialogue=%r "
+            "translation=%r speaker=%r descriptor=%r",
+            (time.perf_counter() - translation_started) * 1000,
+            self.from_lang,
+            dialogue,
+            translated,
+            speaker,
+            descriptor,
+        )
         
         # Text-to-speech output
         if self.enable_tts and self.tts_engine and translated:
@@ -1434,7 +1589,7 @@ class OCRWorker:
                 self.tts_engine.say(translated)
                 self.tts_engine.runAndWait()
             except Exception as e:
-                print(f"TTS error: {e}")
+                logger.exception("TTS error: %s", e)
     
     def _translate_with_retry(
         self,
@@ -1443,27 +1598,41 @@ class OCRWorker:
         marian_text: Optional[str] = None,
     ) -> str:
         """Translate text using MarianMT (primary) or Google Translate (fallback)."""
-        if DEBUG_MODE:
-            print(f"  Translating: '{text}' (backend: {self._translator.backend})")
-            if marian_text is not None and marian_text != text:
-                print("  MarianMT input normalized for Traditional Chinese")
+        logger.debug(
+            "translate_with_retry backend=%s max_retries=%s source_text=%r "
+            "marian_text=%r normalized=%s",
+            self._translator.backend,
+            max_retries,
+            text,
+            marian_text,
+            marian_text is not None and marian_text != text,
+        )
         
         for attempt in range(max_retries):
             try:
                 translated = self._translator.translate(text, marian_text=marian_text)
                 
                 if translated and translated != "[Translation unavailable]":
-                    print(f"  🌐 Result: {translated}")
+                    logger.info(
+                        "translation_attempt_succeeded attempt=%s result=%r",
+                        attempt + 1,
+                        translated,
+                    )
                     return translated
                     
             except Exception as e:
                 error_msg = str(e)
-                print(f"  Attempt {attempt + 1} failed: {error_msg}")
+                logger.exception(
+                    "translation_attempt_failed attempt=%s/%s error=%s",
+                    attempt + 1,
+                    max_retries,
+                    error_msg,
+                )
                 
                 # Exponential backoff for rate limiting
                 if "429" in error_msg or "500" in error_msg:
                     wait_time = (2 ** attempt) * 0.5
-                    print(f"     Retrying in {wait_time}s...")
+                    logger.warning("translation_retry_wait seconds=%s", wait_time)
                     time.sleep(wait_time)
                     continue
                 else:

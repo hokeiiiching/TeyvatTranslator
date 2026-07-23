@@ -22,7 +22,7 @@ A beginner-friendly guide to understanding and improving the Genshin Translator'
 |------|---------|
 | [`ocr.py`](file:///d:/cs/Work/Genshin-Translater/src/engine/ocr.py) | Main OCR logic |
 | [`window_capture.py`](file:///d:/cs/Work/Genshin-Translater/src/engine/window_capture.py) | Window-based capture |
-| `debug_output/` | Saved debug images |
+| `%LOCALAPPDATA%\TeyvatTranslator\diagnostics` | Per-session logs and saved images |
 
 ---
 
@@ -137,10 +137,12 @@ scaled = cv2.resize(gray, None, fx=scale, fy=scale,
 
 ## Debugging Tips
 
-### Enable Debug Mode
-Already enabled! Check `debug_output/` folder:
-- `capture_X.png` - What was captured
-- `processed_X.png` - After preprocessing
+### Open Diagnostics
+Diagnostics are always enabled. Click **Open Diagnostics** in the app, or open
+`%LOCALAPPDATA%\TeyvatTranslator\diagnostics`:
+- `diagnostics.log` - Model, capture, OCR, filtering, and translation details
+- `captures/capture_X.png` - What was captured
+- `captures/preprocessed_X.png` - What PaddleOCR received
 
 ### Check Terminal Output
 ```
@@ -185,4 +187,4 @@ if img.shape[0] < 50:  # If text is small
 
 1. **Preprocessing:** `src/engine/ocr.py` line 255-295
 2. **OCR configs:** `src/engine/ocr.py` line 310-315
-3. **Debug images:** Check `debug_output/` folder
+3. **Debug images:** Click **Open Diagnostics** and inspect the latest session

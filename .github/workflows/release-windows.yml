@@ -70,13 +70,34 @@ jobs:
             -ArgumentList "--ocr-smoke" `
             -Wait `
             -PassThru
-          $logPath = ".\dist\TeyvatTranslator\TeyvatTranslator.log"
-          if (Test-Path $logPath) {
-            Get-Content $logPath
+          $diagnosticsRoot = Join-Path $env:LOCALAPPDATA "TeyvatTranslator\diagnostics"
+          $latestSessionPath = Join-Path $diagnosticsRoot "latest-session.txt"
+          if (!(Test-Path $latestSessionPath)) {
+            throw "Frozen smoke did not create diagnostics pointer: $latestSessionPath"
           }
+          $sessionDirectory = (Get-Content $latestSessionPath -Raw).Trim()
+          $logPath = Join-Path $sessionDirectory "diagnostics.log"
+          if (!(Test-Path $logPath)) {
+            throw "Frozen smoke did not create diagnostics log: $logPath"
+          }
+          Get-Content $logPath
+          $smokeDiagnostics = ".\dist\frozen-smoke-diagnostics"
+          New-Item -ItemType Directory -Force -Path $smokeDiagnostics | Out-Null
+          Copy-Item -Path "$sessionDirectory\*" -Destination $smokeDiagnostics -Recurse -Force
           if ($process.ExitCode -ne 0) {
             throw "Frozen OCR parity smoke failed with exit code $($process.ExitCode)"
           }
+          if (!(Select-String -Path $logPath -Pattern "OCR parity smoke passed" -Quiet)) {
+            throw "Frozen OCR smoke exited successfully but did not log its success marker"
+          }
+
+      - name: Upload frozen diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frozen-smoke-diagnostics-${{ github.ref_name }}
+          path: dist/frozen-smoke-diagnostics
+          if-no-files-found: ignore
 
       - name: Generate checksum
         shell: pwsh

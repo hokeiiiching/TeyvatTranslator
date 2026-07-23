@@ -157,12 +157,10 @@ region_y = int(window_height * 0.73)  # Start at 73% down
 region_height = int(window_height * 0.22)  # 22% of height
 ```
 
-### Debug Mode
-Set in `src/engine/ocr.py`:
-```python
-DEBUG_MODE = True  # Verbose logging
-SAVE_DEBUG_IMAGES = True  # Save captures to debug_output/
-```
+### Diagnostics
+Diagnostics are configured centrally in `src/diagnostics.py`. Each launch
+writes a detailed log and three capture/preprocessing pairs under
+`%LOCALAPPDATA%\TeyvatTranslator\diagnostics`.
 
 ## File Dependencies
 
