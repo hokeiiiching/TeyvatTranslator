@@ -22,7 +22,9 @@ os.environ["FLAGS_use_mkldnn"] = "0"
 import time
 import os
 import logging
-from typing import Optional, Dict, Any, List
+import re
+import uuid
+from typing import Optional, Dict, Any, List, Tuple
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime
@@ -40,7 +42,9 @@ from src.diagnostics import (
     get_log_file,
     get_session_directory,
     get_state_directory,
+    record_pipeline_event,
 )
+from src.data.vocabulary import VOCABULARY
 
 # Auto-pinyin generation
 try:
@@ -112,6 +116,7 @@ class OCRResult:
     total_chars: int = 0
     bounding_boxes: List[Dict] = field(default_factory=list)
     raw_result: Any = None
+    image_size: Tuple[int, int] = (0, 0)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -120,8 +125,74 @@ class OCRResult:
             'num_lines': self.num_lines,
             'chinese_chars': self.chinese_chars,
             'total_chars': self.total_chars,
-            'bounding_boxes': self.bounding_boxes
+            'bounding_boxes': self.bounding_boxes,
+            'image_size': list(self.image_size),
         }
+
+
+@dataclass
+class ParsedTranslationInput:
+    """Semantic interpretation of OCR lines before translation."""
+
+    layout: str
+    dialogue: str
+    speaker: str = ""
+    descriptor: str = ""
+    choices: List[str] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TranslationOutcome:
+    """Result returned by the asynchronous translation job."""
+
+    job_id: str
+    source_text: str
+    display_text: str
+    translated_text: str
+    success: bool
+    layout: str
+    error: str = ""
+
+
+TRANSLATION_UNAVAILABLE = "[Translation unavailable]"
+_CHOICE_MARKER_PATTERN = re.compile(
+    r"^\s*(?:[>›»▶▷►▸◆◇◈●○•·※★☆♦♢]|(?:\d+|[A-Da-d])[.)、:：])+\s*"
+)
+_KNOWN_SPEAKER_LOOKUPS = {
+    term.get("mandarin", "").strip()
+    for term in VOCABULARY
+    if term.get("mandarin")
+    and "character" in (term.get("tags") or [])
+}
+
+
+def _strip_choice_marker(line: str) -> Tuple[str, bool]:
+    """Remove the decorative selector prefix from a Traveller dialogue option."""
+    cleaned, count = _CHOICE_MARKER_PATTERN.subn("", line.strip(), count=1)
+    return cleaned.strip(), bool(count)
+
+
+def _normalize_box(raw_box: Any) -> Optional[List[float]]:
+    """Return any Paddle box representation as [left, top, right, bottom]."""
+    if raw_box is None:
+        return None
+    try:
+        array = np.asarray(raw_box, dtype=float)
+        if array.ndim == 1 and array.size >= 4:
+            left, top, right, bottom = array[:4]
+        elif array.ndim >= 2 and array.shape[-1] >= 2:
+            points = array.reshape(-1, array.shape[-1])
+            left = points[:, 0].min()
+            top = points[:, 1].min()
+            right = points[:, 0].max()
+            bottom = points[:, 1].max()
+        else:
+            return None
+        return [float(left), float(top), float(right), float(bottom)]
+    except Exception:
+        logger.debug("Could not normalize OCR box raw_box=%r", raw_box, exc_info=True)
+        return None
 
 
 @contextmanager
@@ -560,6 +631,7 @@ class OCRWorker:
         self._enable_context = enable_context  # Private var, accessed via property
         self.window_hwnd = window_hwnd  # If set, capture from this window
         self.dialogue_only = dialogue_only  # If True, focus on dialogue area only
+        self.worker_id = uuid.uuid4().hex[:10]
         
         # State
         self.running = False
@@ -574,11 +646,19 @@ class OCRWorker:
         self._saved_preprocessed_count = 0
         self._last_heartbeat = 0.0
         self._last_ocr_summary = "not-run"
+        self._diagnostic_snapshot_count = 0
+        self._last_capture_image: Optional[np.ndarray] = None
         
         # Thread pool for async translation (prevents blocking OCR loop)
         self._executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2)
         self._pending_translation: Optional[Future] = None
         self._pending_text: Optional[str] = None  # Text being translated
+        self._pending_job_id: Optional[str] = None
+        self._pending_job_started: float = 0.0
+        self._translation_job_sequence = 0
+        self._failed_text: Optional[str] = None
+        self._failed_text_attempts = 0
+        self._translation_retry_after = 0.0
         
         # OCR temporal voting buffer - stores last N results for stability
         self.ocr_result_buffer: List[OCRResult] = []
@@ -595,9 +675,11 @@ class OCRWorker:
             if window_hwnd else "screen-region"
         )
         logger.info(
-            "worker_created mode=%s hwnd=%s region=(%s,%s)-(%s,%s) size=%sx%s "
+            "worker_created worker_id=%s mode=%s hwnd=%s "
+            "region=(%s,%s)-(%s,%s) size=%sx%s "
             "source=%s paddle_profile=%s target=%s context=%s tts=%s "
             "session=%s captures=%s",
+            self.worker_id,
             mode,
             window_hwnd,
             x1,
@@ -613,6 +695,16 @@ class OCRWorker:
             enable_tts,
             get_session_directory(),
             DEBUG_DIR,
+        )
+        self._pipeline_event(
+            "worker_created",
+            mode=mode,
+            hwnd=window_hwnd,
+            region=[x1, y1, x2, y2],
+            source_language=from_lang,
+            paddle_profile=get_paddle_lang(from_lang),
+            target_language=to_lang,
+            dialogue_only=dialogue_only,
         )
         
         # RAG engine for context matching (lazy-loaded to prevent UI freeze)
@@ -653,6 +745,17 @@ class OCRWorker:
     def enable_context(self) -> bool:
         """Whether context matching is enabled."""
         return self._enable_context
+
+    def _pipeline_event(self, event: str, **details) -> None:
+        """Record a correlated machine-readable event for this worker."""
+        record_pipeline_event(
+            "ocr_worker",
+            event,
+            worker_id=getattr(self, "worker_id", "test-worker"),
+            frame=getattr(self, "frame_count", 0),
+            source_language=getattr(self, "from_lang", "unknown"),
+            **details,
+        )
     
     @property
     def rag_engine(self):
@@ -681,11 +784,51 @@ class OCRWorker:
                 self._shelve_cache = shelve.open(self._cache_path, writeback=True)
                 logger.info(f"Loaded persistent cache from {self._cache_path}")
             if key in self._shelve_cache:
-                return self._shelve_cache[key]
+                value = self._shelve_cache[key]
+                if not value or value == TRANSLATION_UNAVAILABLE:
+                    logger.warning(
+                        "cache_entry_discarded worker_id=%s key=%r value=%r",
+                        getattr(self, "worker_id", "test-worker"),
+                        key,
+                        value,
+                    )
+                    del self._shelve_cache[key]
+                    self._shelve_cache.sync()
+                    self._pipeline_event(
+                        "cache_entry_discarded",
+                        cache_key=key,
+                        cached_value=value,
+                    )
+                    return None
+                logger.debug(
+                    "cache_hit worker_id=%s key=%r value=%r",
+                    getattr(self, "worker_id", "test-worker"),
+                    key,
+                    value,
+                )
+                return value
+            logger.debug(
+                "cache_miss worker_id=%s key=%r",
+                getattr(self, "worker_id", "test-worker"),
+                key,
+            )
             return None
     
     def _cache_set(self, key: str, value: str) -> None:
         """Set a value in the persistent cache with LRU eviction (thread-safe)."""
+        if not value or value == TRANSLATION_UNAVAILABLE:
+            logger.warning(
+                "cache_write_refused worker_id=%s key=%r value=%r",
+                getattr(self, "worker_id", "test-worker"),
+                key,
+                value,
+            )
+            self._pipeline_event(
+                "cache_write_refused",
+                cache_key=key,
+                value=value,
+            )
+            return
         with self._cache_lock:
             # Initialize cache if needed
             if self._shelve_cache is None:
@@ -699,6 +842,12 @@ class OCRWorker:
                     del self._shelve_cache[k]
             self._shelve_cache[key] = value
             self._shelve_cache.sync()
+            logger.debug(
+                "cache_write worker_id=%s key=%r value=%r",
+                getattr(self, "worker_id", "test-worker"),
+                key,
+                value,
+            )
                 
     def start(self) -> None:
         """Start the OCR processing thread."""
@@ -738,6 +887,274 @@ class OCRWorker:
             self.current_text,
             self._last_ocr_summary,
         )
+
+    def _is_known_speaker(self, line: str) -> bool:
+        lookup = normalize_for_lookup(line.strip(), self.from_lang)
+        return lookup in _KNOWN_SPEAKER_LOOKUPS
+
+    def _choice_layout_evidence(
+        self,
+        lines: List[str],
+        ocr_result: Optional[OCRResult],
+    ) -> Tuple[bool, int, List[str]]:
+        """Detect vertically aligned Traveller choices without relying on script."""
+        if len(lines) < 2:
+            return False, 0, []
+
+        evidence: List[str] = []
+        first_is_known_speaker = self._is_known_speaker(lines[0])
+        option_start = 1 if first_is_known_speaker and len(lines) >= 3 else 0
+        option_lines = lines[option_start:]
+        if len(option_lines) < 2:
+            return False, 0, []
+
+        marker_count = sum(_strip_choice_marker(line)[1] for line in option_lines)
+        if marker_count:
+            evidence.append(f"choice-markers={marker_count}")
+
+        boxes = (ocr_result.bounding_boxes if ocr_result else []) or []
+        option_boxes = boxes[option_start:option_start + len(option_lines)]
+        normalized_boxes = [
+            entry.get("box")
+            for entry in option_boxes
+            if entry.get("box") is not None
+        ]
+        if len(normalized_boxes) == len(option_lines):
+            left_edges = [box[0] for box in normalized_boxes]
+            image_width = (
+                ocr_result.image_size[0]
+                if ocr_result and ocr_result.image_size
+                else 0
+            )
+            tolerance = max(40.0, image_width * 0.06)
+            left_spread = max(left_edges) - min(left_edges)
+            if left_spread <= tolerance:
+                evidence.append(
+                    f"vertically-left-aligned spread={left_spread:.1f} "
+                    f"tolerance={tolerance:.1f}"
+                )
+
+        if (
+            len(option_lines) >= 3
+            and not first_is_known_speaker
+            and all(_chinese_chars(line) for line in option_lines)
+        ):
+            evidence.append("three-or-more-unlabelled-chinese-lines")
+
+        is_choice_layout = any(
+            reason.startswith(("choice-markers", "vertically-left-aligned", "three-or-more"))
+            for reason in evidence
+        )
+        if first_is_known_speaker and option_start == 1:
+            evidence.append("known-speaker-prefix")
+        return is_choice_layout, option_start, evidence
+
+    def _parse_translation_input(
+        self,
+        text: str,
+        ocr_result: Optional[OCRResult] = None,
+    ) -> ParsedTranslationInput:
+        """Separate normal speaker dialogue from vertically stacked choices."""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return ParsedTranslationInput(
+                layout="empty",
+                dialogue="",
+                evidence=["no-nonempty-lines"],
+            )
+
+        is_choices, option_start, evidence = self._choice_layout_evidence(
+            lines,
+            ocr_result,
+        )
+        if is_choices:
+            speaker = lines[0] if option_start == 1 else ""
+            choices = []
+            for line in lines[option_start:]:
+                cleaned, had_marker = _strip_choice_marker(line)
+                if cleaned:
+                    choices.append(cleaned)
+                if had_marker:
+                    evidence.append(f"marker-stripped={line!r}")
+            return ParsedTranslationInput(
+                layout="choices",
+                dialogue="\n".join(choices),
+                speaker=speaker,
+                choices=choices,
+                evidence=evidence,
+            )
+
+        speaker = ""
+        descriptor = ""
+        dialogue = "\n".join(lines)
+        start_idx = 0
+        potential_speaker = lines[0]
+        chinese_chars = _chinese_chars(potential_speaker)
+        if not chinese_chars and len(lines) >= 3:
+            start_idx = 1
+            potential_speaker = lines[1]
+            chinese_chars = _chinese_chars(potential_speaker)
+            evidence.append(f"leading-garbage-skipped={lines[0]!r}")
+
+        speaker_shape = (
+            1 <= len(chinese_chars) <= 6
+            and len(potential_speaker) <= 10
+            and len(lines[start_idx + 1:]) >= 1
+        )
+        if speaker_shape:
+            speaker = potential_speaker
+            remaining_lines = lines[start_idx + 1:]
+            evidence.append(
+                "speaker=known-vocabulary"
+                if self._is_known_speaker(speaker)
+                else "speaker=short-first-line"
+            )
+            if len(remaining_lines) >= 2 and is_descriptor_line(remaining_lines[0]):
+                descriptor = remaining_lines[0]
+                remaining_lines = remaining_lines[1:]
+                evidence.append("descriptor=pattern-match")
+            dialogue = "\n".join(remaining_lines).strip()
+
+        if not dialogue:
+            evidence.append("empty-dialogue-fell-back-to-full-text")
+            speaker = ""
+            descriptor = ""
+            dialogue = "\n".join(lines)
+
+        return ParsedTranslationInput(
+            layout="dialogue",
+            dialogue=dialogue,
+            speaker=speaker,
+            descriptor=descriptor,
+            evidence=evidence,
+        )
+
+    def _save_diagnostic_snapshot(
+        self,
+        image: Optional[np.ndarray],
+        event: str,
+        job_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Save bounded event-time captures, not only startup frames."""
+        if image is None or self._diagnostic_snapshot_count >= 20:
+            return None
+        try:
+            self._diagnostic_snapshot_count += 1
+            safe_event = re.sub(r"[^a-zA-Z0-9_-]+", "-", event).strip("-")
+            safe_job = re.sub(
+                r"[^a-zA-Z0-9_-]+",
+                "-",
+                job_id or "no-job",
+            ).strip("-")
+            path = os.path.join(
+                DEBUG_DIR,
+                f"event_{self._diagnostic_snapshot_count:02d}_"
+                f"frame_{self.frame_count}_{safe_event}_{safe_job}.png",
+            )
+            Image.fromarray(image).save(path)
+            logger.info(
+                "diagnostic_snapshot_saved worker_id=%s frame=%s event=%s "
+                "job_id=%s path=%s shape=%s",
+                self.worker_id,
+                self.frame_count,
+                event,
+                job_id,
+                path,
+                image.shape,
+            )
+            self._pipeline_event(
+                "diagnostic_snapshot_saved",
+                snapshot_event=event,
+                job_id=job_id,
+                path=path,
+                shape=list(image.shape),
+            )
+            return path
+        except Exception:
+            logger.exception(
+                "diagnostic_snapshot_failed worker_id=%s frame=%s event=%s",
+                self.worker_id,
+                self.frame_count,
+                event,
+            )
+            return None
+
+    def _handle_translation_outcome(
+        self,
+        outcome: TranslationOutcome,
+    ) -> None:
+        elapsed_ms = (
+            (time.perf_counter() - self._pending_job_started) * 1000
+            if self._pending_job_started
+            else 0.0
+        )
+        if outcome.success:
+            self.current_text = outcome.source_text
+            self._failed_text = None
+            self._failed_text_attempts = 0
+            self._translation_retry_after = 0.0
+            logger.info(
+                "translation_job_committed worker_id=%s job_id=%s elapsed_ms=%.1f "
+                "layout=%s source=%r display=%r translation=%r",
+                self.worker_id,
+                outcome.job_id,
+                elapsed_ms,
+                outcome.layout,
+                outcome.source_text,
+                outcome.display_text,
+                outcome.translated_text,
+            )
+            self._pipeline_event(
+                "translation_job_committed",
+                job_id=outcome.job_id,
+                elapsed_ms=round(elapsed_ms, 1),
+                layout=outcome.layout,
+                source_text=outcome.source_text,
+                display_text=outcome.display_text,
+                translated_text=outcome.translated_text,
+            )
+            return
+
+        if self.current_text == outcome.source_text:
+            self.current_text = None
+        if self._failed_text == outcome.source_text:
+            self._failed_text_attempts += 1
+        else:
+            self._failed_text = outcome.source_text
+            self._failed_text_attempts = 1
+        retry_delay = min(30.0, 2.0 ** self._failed_text_attempts)
+        self._translation_retry_after = time.perf_counter() + retry_delay
+        logger.error(
+            "translation_job_failed worker_id=%s job_id=%s elapsed_ms=%.1f "
+            "layout=%s source=%r error=%r retry_in_seconds=%.1f attempt=%s",
+            self.worker_id,
+            outcome.job_id,
+            elapsed_ms,
+            outcome.layout,
+            outcome.source_text,
+            outcome.error,
+            retry_delay,
+            self._failed_text_attempts,
+        )
+        self._pipeline_event(
+            "translation_job_failed",
+            job_id=outcome.job_id,
+            elapsed_ms=round(elapsed_ms, 1),
+            layout=outcome.layout,
+            source_text=outcome.source_text,
+            error=outcome.error,
+            retry_in_seconds=retry_delay,
+            attempt=self._failed_text_attempts,
+        )
+        self._save_diagnostic_snapshot(
+            self._last_capture_image,
+            "translation-failed",
+            outcome.job_id,
+        )
+        self._update_status(
+            f"Translation failed; retrying in {retry_delay:.0f}s. "
+            "Open Diagnostics for details."
+        )
         
     def stop(self) -> None:
         """Stop the OCR processing thread."""
@@ -776,7 +1193,7 @@ class OCRWorker:
         while self.running:
             self.frame_count += 1
             frame_start = time.perf_counter()
-            
+
             # Create timing stats for this frame
             timing = TimingStats(frame_id=self.frame_count)
             
@@ -785,14 +1202,47 @@ class OCRWorker:
                 if self._pending_translation is not None:
                     if self._pending_translation.done():
                         try:
-                            # Get the result (this won't block since it's done)
-                            self._pending_translation.result()
-                            logger.debug(f"[Frame {self.frame_count}] Async translation completed")
+                            outcome = self._pending_translation.result()
+                            if not isinstance(outcome, TranslationOutcome):
+                                outcome = TranslationOutcome(
+                                    job_id=self._pending_job_id or "unknown-job",
+                                    source_text=self._pending_text or "",
+                                    display_text=self._pending_text or "",
+                                    translated_text="",
+                                    success=False,
+                                    layout="unknown",
+                                    error=(
+                                        "Translation worker returned an unexpected "
+                                        f"result type: {type(outcome).__name__}"
+                                    ),
+                                )
+                            self._handle_translation_outcome(outcome)
                         except Exception as e:
-                            logger.exception("Async translation error: %s", e)
+                            logger.exception(
+                                "translation_job_exception worker_id=%s job_id=%s "
+                                "source=%r error=%s: %s",
+                                self.worker_id,
+                                self._pending_job_id,
+                                self._pending_text,
+                                type(e).__name__,
+                                e,
+                            )
+                            self._handle_translation_outcome(
+                                TranslationOutcome(
+                                    job_id=self._pending_job_id or "unknown-job",
+                                    source_text=self._pending_text or "",
+                                    display_text=self._pending_text or "",
+                                    translated_text="",
+                                    success=False,
+                                    layout="unknown",
+                                    error=f"{type(e).__name__}: {e}",
+                                )
+                            )
                         finally:
                             self._pending_translation = None
                             self._pending_text = None
+                            self._pending_job_id = None
+                            self._pending_job_started = 0.0
                 
                 # === STEP 1: Capture image from game ===
                 with timed_operation("Capture", timing, "capture_ms"):
@@ -821,6 +1271,7 @@ class OCRWorker:
                         self._consecutive_capture_misses,
                     )
                     self._consecutive_capture_misses = 0
+                self._last_capture_image = image
                 
                 # === STEP 2: Extract text using PaddleOCR ===
                 with timed_operation("OCR", timing, "ocr_ms"):
@@ -872,19 +1323,55 @@ class OCRWorker:
                     ]
                     for half, full in replacements:
                         text = text.replace(half, full)
-                    return text
+                    normalized_lines = []
+                    for line in text.splitlines():
+                        cleaned, _ = _strip_choice_marker(line)
+                        cleaned = re.sub(r"\s+", "", cleaned)
+                        if cleaned:
+                            normalized_lines.append(cleaned)
+                    return "\n".join(normalized_lines)
                 
                 normalized_new = normalize_for_comparison(ocr_result.text)
                 normalized_current = normalize_for_comparison(self.current_text)
                 # Skip if same as already-translated text
                 if normalized_new == normalized_current:
-                    logger.debug(f"[Frame {self.frame_count}] Same as current, skipping")
+                    logger.debug(
+                        "pipeline_gate worker_id=%s frame=%s decision=skip "
+                        "reason=already-successfully-translated normalized=%r",
+                        self.worker_id,
+                        self.frame_count,
+                        normalized_new,
+                    )
                     time.sleep(0.1)
                     continue
                 
                 # Skip if this text is already being translated
                 if normalized_new == normalize_for_comparison(self._pending_text):
-                    logger.debug(f"[Frame {self.frame_count}] Already translating, skipping")
+                    logger.debug(
+                        "pipeline_gate worker_id=%s frame=%s decision=skip "
+                        "reason=translation-pending job_id=%s normalized=%r",
+                        self.worker_id,
+                        self.frame_count,
+                        self._pending_job_id,
+                        normalized_new,
+                    )
+                    time.sleep(0.1)
+                    continue
+
+                # Keep one authoritative in-flight job. Replacing the Future here
+                # would lose its result and leave the detected text uncommitted.
+                if self._pending_translation is not None:
+                    logger.debug(
+                        "pipeline_gate worker_id=%s frame=%s decision=skip "
+                        "reason=different-translation-pending job_id=%s "
+                        "pending_source=%r observed_source=%r",
+                        self.worker_id,
+                        self.frame_count,
+                        self._pending_job_id,
+                        self._pending_text,
+                        ocr_result.text,
+                    )
+                    self._log_heartbeat("different-translation-pending")
                     time.sleep(0.1)
                     continue
 
@@ -892,40 +1379,151 @@ class OCRWorker:
                 # Both Chinese scripts use this exact same gate.
                 normalized_candidate = normalize_for_comparison(self._candidate_text)
                 current_time = time.perf_counter()
+                if (
+                    normalized_new == normalize_for_comparison(self._failed_text)
+                    and current_time < self._translation_retry_after
+                ):
+                    retry_remaining = self._translation_retry_after - current_time
+                    logger.debug(
+                        "pipeline_gate worker_id=%s frame=%s decision=skip "
+                        "reason=translation-retry-backoff remaining_seconds=%.2f "
+                        "attempt=%s normalized=%r",
+                        self.worker_id,
+                        self.frame_count,
+                        retry_remaining,
+                        self._failed_text_attempts,
+                        normalized_new,
+                    )
+                    self._log_heartbeat("translation-retry-backoff")
+                    time.sleep(0.1)
+                    continue
+
+                choice_layout, _, choice_evidence = self._choice_layout_evidence(
+                    [line for line in ocr_result.text.splitlines() if line.strip()],
+                    ocr_result,
+                )
+                required_stability = 0.35 if choice_layout else self.TEXT_STABILITY_DELAY
 
                 if normalized_new != normalized_candidate:
                     # New candidate - start timer
                     self._candidate_text = ocr_result.text
                     self._candidate_timestamp = current_time
-                    logger.debug(f"[Frame {self.frame_count}] New candidate text, starting stability timer")
+                    logger.info(
+                        "pipeline_gate worker_id=%s frame=%s decision=candidate-start "
+                        "text=%r normalized=%r confidence=%.3f lines=%s "
+                        "choice_layout=%s choice_evidence=%r required_stability=%.2f",
+                        self.worker_id,
+                        self.frame_count,
+                        ocr_result.text,
+                        normalized_new,
+                        ocr_result.confidence,
+                        ocr_result.num_lines,
+                        choice_layout,
+                        choice_evidence,
+                        required_stability,
+                    )
+                    snapshot = self._save_diagnostic_snapshot(
+                        image,
+                        "ocr-candidate",
+                    )
+                    self._pipeline_event(
+                        "ocr_candidate_started",
+                        text=ocr_result.text,
+                        normalized_text=normalized_new,
+                        confidence=ocr_result.confidence,
+                        chinese_chars=ocr_result.chinese_chars,
+                        lines=ocr_result.num_lines,
+                        boxes=ocr_result.bounding_boxes,
+                        image_size=list(ocr_result.image_size),
+                        choice_layout=choice_layout,
+                        choice_evidence=choice_evidence,
+                        required_stability=required_stability,
+                        snapshot=snapshot,
+                    )
                     time.sleep(0.1)
                     continue
 
                 # Same as candidate - check if stable long enough
                 elapsed = current_time - self._candidate_timestamp
-                if elapsed < self.TEXT_STABILITY_DELAY:
-                    logger.debug(f"[Frame {self.frame_count}] Waiting for stability ({elapsed:.2f}s / {self.TEXT_STABILITY_DELAY}s)")
+                if elapsed < required_stability:
+                    logger.debug(
+                        "pipeline_gate worker_id=%s frame=%s decision=wait "
+                        "reason=stability elapsed=%.2f required=%.2f text=%r",
+                        self.worker_id,
+                        self.frame_count,
+                        elapsed,
+                        required_stability,
+                        ocr_result.text,
+                    )
                     time.sleep(0.1)
                     continue
                 
                 # Text is stable! Clear candidate and proceed to translate
-                logger.debug(f"[Frame {self.frame_count}] Text stable for {elapsed:.2f}s, translating")
+                parsed = self._parse_translation_input(
+                    ocr_result.text,
+                    ocr_result,
+                )
+                logger.info(
+                    "pipeline_gate worker_id=%s frame=%s decision=translate "
+                    "stable_seconds=%.2f layout=%s speaker=%r descriptor=%r "
+                    "dialogue=%r choices=%r evidence=%r",
+                    self.worker_id,
+                    self.frame_count,
+                    elapsed,
+                    parsed.layout,
+                    parsed.speaker,
+                    parsed.descriptor,
+                    parsed.dialogue,
+                    parsed.choices,
+                    parsed.evidence,
+                )
                 self._candidate_text = None
                 self._candidate_timestamp = 0.0
                 
-                # === STEP 3: Update current text ===
-                self.current_text = ocr_result.text
+                # === STEP 3: Record detection; only commit current_text after
+                # translation succeeds so transient backend failures can retry. ===
                 logger.info(f"\nDetected: {ocr_result.text}")
                 logger.info(f"   Confidence: {ocr_result.confidence:.2f} | Lines: {ocr_result.num_lines}")
                 
                 # === STEP 4: Submit translation ASYNCHRONOUSLY ===
                 # This doesn't block - OCR loop continues immediately
-                self._pending_text = ocr_result.text
-                self._pending_translation = self._executor.submit(
-                    self._process_translation, ocr_result.text
+                self._translation_job_sequence += 1
+                job_id = (
+                    f"{self.worker_id}-"
+                    f"{self._translation_job_sequence:05d}"
                 )
-                logger.debug(f"[Frame {self.frame_count}] Translation submitted to thread pool")
-                self._update_status("Chinese dialogue detected - translating...")
+                self._pending_text = ocr_result.text
+                self._pending_job_id = job_id
+                self._pending_job_started = time.perf_counter()
+                self._pending_translation = self._executor.submit(
+                    self._process_translation,
+                    ocr_result.text,
+                    ocr_result,
+                    job_id,
+                )
+                logger.info(
+                    "translation_job_submitted worker_id=%s frame=%s job_id=%s "
+                    "layout=%s source=%r",
+                    self.worker_id,
+                    self.frame_count,
+                    job_id,
+                    parsed.layout,
+                    ocr_result.text,
+                )
+                self._pipeline_event(
+                    "translation_job_submitted",
+                    job_id=job_id,
+                    layout=parsed.layout,
+                    source_text=ocr_result.text,
+                    parsed_dialogue=parsed.dialogue,
+                    choices=parsed.choices,
+                    evidence=parsed.evidence,
+                )
+                self._update_status(
+                    "Traveller choices detected - translating each option..."
+                    if parsed.layout == "choices"
+                    else "Chinese dialogue detected - translating..."
+                )
                 
                 # Note: timing.translation_ms will be 0 since we're not waiting
                 timing.translation_ms = 0.0
@@ -1168,28 +1766,51 @@ class OCRWorker:
         try:
             texts = []
             scores = []
+            raw_boxes = []
+
+            def as_list(value):
+                if value is None:
+                    return []
+                if hasattr(value, "tolist"):
+                    return value.tolist()
+                return list(value)
             
             # Method 1: PaddleX 3.x format - dict-like access
             if hasattr(ocr_result_obj, 'get'):
-                texts = ocr_result_obj.get('rec_texts', []) or []
-                scores = ocr_result_obj.get('rec_scores', []) or []
+                texts = as_list(ocr_result_obj.get('rec_texts'))
+                scores = as_list(ocr_result_obj.get('rec_scores'))
+                raw_boxes = as_list(ocr_result_obj.get('rec_boxes'))
+                if not raw_boxes:
+                    raw_boxes = as_list(ocr_result_obj.get('dt_polys'))
                 logger.debug(f"  Tried dict access: {len(texts)} texts")
                 # Debug: Log the actual values
                 logger.debug(f"  rec_texts value: {ocr_result_obj.get('rec_texts')}")
                 logger.debug(f"  rec_scores value: {ocr_result_obj.get('rec_scores')}")
+                logger.debug(
+                    "  rec_boxes value: %r; dt_polys value: %r",
+                    ocr_result_obj.get('rec_boxes'),
+                    ocr_result_obj.get('dt_polys'),
+                )
             
             # Method 1b: Try attribute access if dict access failed
             if not texts and hasattr(ocr_result_obj, 'rec_texts'):
-                texts = getattr(ocr_result_obj, 'rec_texts', []) or []
-                scores = getattr(ocr_result_obj, 'rec_scores', []) or []
+                texts = as_list(getattr(ocr_result_obj, 'rec_texts', None))
+                scores = as_list(getattr(ocr_result_obj, 'rec_scores', None))
+                raw_boxes = as_list(getattr(ocr_result_obj, 'rec_boxes', None))
+                if not raw_boxes:
+                    raw_boxes = as_list(getattr(ocr_result_obj, 'dt_polys', None))
                 logger.debug(f"  Tried attribute access: {len(texts)} texts")
                 logger.debug(f"  rec_texts attr: {texts}")
             
             # Method 1c: Try subscript access
             if not texts:
                 try:
-                    texts = ocr_result_obj['rec_texts'] or []
-                    scores = ocr_result_obj['rec_scores'] or []
+                    texts = as_list(ocr_result_obj['rec_texts'])
+                    scores = as_list(ocr_result_obj['rec_scores'])
+                    try:
+                        raw_boxes = as_list(ocr_result_obj['rec_boxes'])
+                    except (KeyError, TypeError):
+                        raw_boxes = as_list(ocr_result_obj['dt_polys'])
                     logger.debug(f"  Tried subscript access: {len(texts)} texts")
                 except (KeyError, TypeError) as e:
                     logger.debug(f"  Subscript access failed: {e}")
@@ -1203,6 +1824,7 @@ class OCRWorker:
                         if isinstance(text_conf, (list, tuple)) and len(text_conf) >= 2:
                             texts.append(str(text_conf[0]))
                             scores.append(float(text_conf[1]))
+                            raw_boxes.append(item[0])
                 logger.debug(f"  Tried legacy list format: {len(texts)} texts")
             
             # Method 3: Check if result[0] IS the list of items directly
@@ -1215,21 +1837,50 @@ class OCRWorker:
                                 if isinstance(text_conf, (list, tuple)) and len(text_conf) >= 2:
                                     texts.append(str(text_conf[0]))
                                     scores.append(float(text_conf[1]))
+                                    raw_boxes.append(sub_item[0])
                 logger.debug(f"  Tried nested list format: {len(texts)} texts")
             
-            logger.debug(f"  Found {len(texts)} text entries")
+            logger.debug(
+                "  Found %s text entries, %s scores, and %s boxes",
+                len(texts),
+                len(scores),
+                len(raw_boxes),
+            )
             
             for i, text in enumerate(texts):
                 if text:
                     score = scores[i] if i < len(scores) else 0.0
+                    box = _normalize_box(
+                        raw_boxes[i] if i < len(raw_boxes) else None
+                    )
                     # Filter out low-confidence lines (likely OCR noise/garbage)
                     # Using 0.6 threshold to filter garbage while keeping real dialogue
                     if score < 0.6:
-                        logger.debug(f"  Line {i+1}: \"{text}\" (conf: {score:.3f}) - SKIPPED (low confidence)")
+                        logger.debug(
+                            "  Line %s: %r conf=%.3f box=%r decision=skip-low-confidence",
+                            i + 1,
+                            text,
+                            score,
+                            box,
+                        )
                         continue
                     lines.append(str(text))
                     confidences.append(float(score) if score else 0.0)
-                    logger.debug(f"  Line {i+1}: \"{text}\" (conf: {score:.3f})")
+                    bounding_boxes.append(
+                        {
+                            "source_index": i,
+                            "text": str(text),
+                            "confidence": float(score),
+                            "box": box,
+                        }
+                    )
+                    logger.debug(
+                        "  Line %s: %r conf=%.3f box=%r decision=accept",
+                        i + 1,
+                        text,
+                        score,
+                        box,
+                    )
                     
         except Exception as e:
             logger.error(f"  Failed to parse OCR result: {e}")
@@ -1322,6 +1973,8 @@ class OCRWorker:
         
         # Clean up each line
         lines = [cleanup_ocr_text(line) for line in lines]
+        for entry, cleaned_line in zip(bounding_boxes, lines):
+            entry["cleaned_text"] = cleaned_line
         
         # === Merge split dialogue lines ===
         # OCR sometimes splits a single dialogue line into multiple lines
@@ -1364,7 +2017,8 @@ class OCRWorker:
             chinese_chars=chinese_chars,
             total_chars=total_chars,
             bounding_boxes=bounding_boxes,
-            raw_result=result
+            raw_result=result,
+            image_size=(w, h),
         )
         
         # === Log summary ===
@@ -1383,74 +2037,85 @@ class OCRWorker:
         
         return ocr_result
         
-    def _process_translation(self, text: str) -> None:
-        """Process text and update translation window with speaker info."""
+    def _process_translation(
+        self,
+        text: str,
+        ocr_result: Optional[OCRResult] = None,
+        job_id: Optional[str] = None,
+    ) -> TranslationOutcome:
+        """Parse, translate, and display one correlated OCR detection."""
         translation_started = time.perf_counter()
+        job_id = job_id or f"direct-{uuid.uuid4().hex[:8]}"
         logger.info(
-            "translation_started source=%s backend=%s raw_text=%r",
+            "translation_started worker_id=%s job_id=%s source=%s "
+            "backend=%s raw_text=%r ocr=%r",
+            getattr(self, "worker_id", "test-worker"),
+            job_id,
             self.from_lang,
             getattr(getattr(self, "_translator", None), "backend", "test-or-unknown"),
             text,
+            ocr_result.to_dict() if ocr_result else None,
         )
         
         text_original = text
         text_lookup = normalize_for_lookup(text_original, self.from_lang)
-        context = {}
+        parsed = self._parse_translation_input(text_original, ocr_result)
+        context = {
+            "layout": parsed.layout,
+            "choices": parsed.choices,
+            "job_id": job_id,
+        }
         translated = ""
-        speaker = ""
-        dialogue = text_original
-        
-        # Parse speaker name if OCR captured multiple lines
-        # Speaker name is typically the first shorter line (< 10 chars)
-        # Descriptor lines (NPC title/affiliation) may appear between speaker and dialogue
-        lines = text_original.split('\n')
-        descriptor = ""  # NPC title/affiliation line
-        
-        if len(lines) >= 2:
-            potential_speaker = lines[0].strip()
-            # Speaker name is usually short (2-5 Chinese characters) and centered
-            chinese_chars = _chinese_chars(potential_speaker)
-            
-            # Skip garbage lines with no Chinese characters (e.g., 'AAAA' from UI artifacts)
-            start_idx = 0
-            if len(chinese_chars) == 0 and len(lines) >= 3:
-                # First line is garbage, try line 2 as speaker
-                start_idx = 1
-                potential_speaker = lines[1].strip()
-                chinese_chars = _chinese_chars(potential_speaker)
-                logger.debug(f"  Skipped garbage line: '{lines[0].strip()}', using line 2 as speaker")
-            
-            if 1 <= len(chinese_chars) <= 6 and len(potential_speaker) <= 10:
-                speaker = potential_speaker
-                
-                # Position-based descriptor detection (accounting for skipped garbage lines):
-                # - Speaker is at start_idx
-                # - Descriptor is at start_idx+1 IF there are enough lines AND it's short
-                # - Remaining lines: Dialogue
-                dialogue_lines = []
-                remaining_lines = lines[start_idx + 1:]  # Lines after speaker
-                
-                if len(remaining_lines) >= 2:
-                    # Check if first remaining line looks like a descriptor (short, no dialogue punctuation)
-                    line2 = remaining_lines[0].strip()
-                    has_dialogue_punct = any(p in line2 for p in '。？！')
-                    
-                    if len(line2) <= 15 and not has_dialogue_punct:
-                        # This is the descriptor
-                        descriptor = line2
-                        dialogue_lines = [l.strip() for l in remaining_lines[1:] if l.strip()]
-                        logger.info(f"  Captured descriptor: {line2}")
-                    else:
-                        # No descriptor, all remaining lines are dialogue
-                        dialogue_lines = [l.strip() for l in remaining_lines if l.strip()]
-                else:
-                    # Only speaker + dialogue, no descriptor
-                    dialogue_lines = [l.strip() for l in remaining_lines if l.strip()]
-                
-                dialogue = '\n'.join(dialogue_lines).strip()
-                logger.info("speaker_detected=%r", speaker)
-                if descriptor:
-                    logger.info("npc_descriptor=%r", descriptor)
+        speaker = parsed.speaker
+        descriptor = parsed.descriptor
+        dialogue = parsed.dialogue
+        if speaker:
+            context["speaker"] = speaker
+        if descriptor:
+            context["descriptor"] = descriptor
+        logger.info(
+            "translation_input_parsed worker_id=%s job_id=%s layout=%s "
+            "speaker=%r descriptor=%r dialogue=%r choices=%r evidence=%r",
+            getattr(self, "worker_id", "test-worker"),
+            job_id,
+            parsed.layout,
+            speaker,
+            descriptor,
+            dialogue,
+            parsed.choices,
+            parsed.evidence,
+        )
+        self._pipeline_event(
+            "translation_input_parsed",
+            job_id=job_id,
+            layout=parsed.layout,
+            raw_text=text_original,
+            speaker=speaker,
+            descriptor=descriptor,
+            dialogue=dialogue,
+            choices=parsed.choices,
+            evidence=parsed.evidence,
+            ocr=ocr_result.to_dict() if ocr_result else None,
+        )
+
+        if not dialogue:
+            error = "Parsed dialogue is empty"
+            logger.error(
+                "translation_aborted worker_id=%s job_id=%s reason=%s raw_text=%r",
+                getattr(self, "worker_id", "test-worker"),
+                job_id,
+                error,
+                text_original,
+            )
+            return TranslationOutcome(
+                job_id=job_id,
+                source_text=text_original,
+                display_text="",
+                translated_text="",
+                success=False,
+                layout=parsed.layout,
+                error=error,
+            )
         
         speaker_lookup = normalize_for_lookup(speaker, self.from_lang)
         descriptor_lookup = normalize_for_lookup(descriptor, self.from_lang)
@@ -1538,49 +2203,159 @@ class OCRWorker:
                         descriptor_clean,
                         max_retries=2,
                         marian_text=descriptor_marian_text,
+                        job_id=job_id,
+                        segment="descriptor",
                     )
                     # Cache descriptor translation
-                    self._cache_set(descriptor_cache_key, descriptor_english)
+                    if descriptor_english:
+                        self._cache_set(descriptor_cache_key, descriptor_english)
                 
-                context['descriptor_english'] = descriptor_english
+                context['descriptor_english'] = descriptor_english or ""
             except Exception as e:
                 context['descriptor_english'] = ''
                 logger.exception("Descriptor translation failed: %s", e)
         
-        # RAG for exact vocabulary matches only
-        if self.enable_context and self.rag_engine and len(dialogue_lookup) <= 10:
-            matches = self.rag_engine.get_context(dialogue_lookup)
-            if matches and matches[0].get('mandarin', '') == dialogue_lookup:
-                translated = matches[0].get('english', '')
-                logger.info("rag_exact_match translation=%r", translated)
-        
-        # Fall back to translation (check cache first)
-        if not translated:
-            dialogue_cache_key = make_cache_key(self.from_lang, "dialogue", dialogue)
-            cached = self._cache_get(dialogue_cache_key)
-            if cached:
-                translated = cached
-                logger.debug(f"  Cache hit: {translated}")
-            else:
-                translated = self._translate_with_retry(
-                    dialogue,
-                    max_retries=3,
-                    marian_text=dialogue_lookup if dialogue_lookup != dialogue else None,
+        if parsed.layout == "choices":
+            translated_choices: List[str] = []
+            for choice_index, choice in enumerate(parsed.choices, start=1):
+                choice_lookup = normalize_for_lookup(choice, self.from_lang)
+                choice_cache_key = make_cache_key(
+                    self.from_lang,
+                    "choice",
+                    choice,
                 )
-                # Persist to cache
-                self._cache_set(dialogue_cache_key, translated)
+                choice_translation = self._cache_get(choice_cache_key)
+                source = "cache" if choice_translation else "backend"
+                if not choice_translation:
+                    choice_translation = self._translate_with_retry(
+                        choice,
+                        max_retries=3,
+                        marian_text=(
+                            choice_lookup if choice_lookup != choice else None
+                        ),
+                        job_id=job_id,
+                        segment=f"choice-{choice_index}",
+                    )
+                    if choice_translation:
+                        self._cache_set(choice_cache_key, choice_translation)
+                logger.info(
+                    "choice_translation_result worker_id=%s job_id=%s index=%s "
+                    "source=%s choice=%r lookup=%r translation=%r success=%s",
+                    getattr(self, "worker_id", "test-worker"),
+                    job_id,
+                    choice_index,
+                    source,
+                    choice,
+                    choice_lookup,
+                    choice_translation,
+                    bool(choice_translation),
+                )
+                self._pipeline_event(
+                    "choice_translation_result",
+                    job_id=job_id,
+                    index=choice_index,
+                    source=source,
+                    choice=choice,
+                    lookup=choice_lookup,
+                    translation=choice_translation,
+                    success=bool(choice_translation),
+                )
+                if not choice_translation:
+                    error = f"Translation unavailable for choice {choice_index}"
+                    return TranslationOutcome(
+                        job_id=job_id,
+                        source_text=text_original,
+                        display_text=dialogue,
+                        translated_text="\n".join(translated_choices),
+                        success=False,
+                        layout=parsed.layout,
+                        error=error,
+                    )
+                translated_choices.append(choice_translation)
+            translated = "\n".join(translated_choices)
+        else:
+            # RAG for exact vocabulary matches only
+            if self.enable_context and self.rag_engine and len(dialogue_lookup) <= 10:
+                matches = self.rag_engine.get_context(dialogue_lookup)
+                if matches and matches[0].get('mandarin', '') == dialogue_lookup:
+                    translated = matches[0].get('english', '')
+                    logger.info("rag_exact_match translation=%r", translated)
+
+            # Fall back to translation (check cache first)
+            if not translated:
+                dialogue_cache_key = make_cache_key(
+                    self.from_lang,
+                    "dialogue",
+                    dialogue,
+                )
+                cached = self._cache_get(dialogue_cache_key)
+                if cached:
+                    translated = cached
+                    logger.debug("dialogue_cache_hit translation=%r", translated)
+                else:
+                    translated = self._translate_with_retry(
+                        dialogue,
+                        max_retries=3,
+                        marian_text=(
+                            dialogue_lookup
+                            if dialogue_lookup != dialogue
+                            else None
+                        ),
+                        job_id=job_id,
+                        segment="dialogue",
+                    )
+                    if translated:
+                        self._cache_set(dialogue_cache_key, translated)
+
+        if not translated:
+            error = "All translation backends returned unavailable"
+            logger.error(
+                "translation_unavailable worker_id=%s job_id=%s layout=%s "
+                "dialogue=%r backend=%s",
+                getattr(self, "worker_id", "test-worker"),
+                job_id,
+                parsed.layout,
+                dialogue,
+                getattr(
+                    getattr(self, "_translator", None),
+                    "backend",
+                    "test-or-unknown",
+                ),
+            )
+            return TranslationOutcome(
+                job_id=job_id,
+                source_text=text_original,
+                display_text=dialogue,
+                translated_text="",
+                success=False,
+                layout=parsed.layout,
+                error=error,
+            )
         
         # Update the display window
         self.translate_window.update_translation(dialogue, translated, context)
         logger.info(
-            "translation_completed elapsed_ms=%.1f source=%s dialogue=%r "
-            "translation=%r speaker=%r descriptor=%r",
+            "translation_completed worker_id=%s job_id=%s elapsed_ms=%.1f "
+            "source=%s layout=%s dialogue=%r translation=%r speaker=%r descriptor=%r",
+            getattr(self, "worker_id", "test-worker"),
+            job_id,
             (time.perf_counter() - translation_started) * 1000,
             self.from_lang,
+            parsed.layout,
             dialogue,
             translated,
             speaker,
             descriptor,
+        )
+        self._pipeline_event(
+            "translation_completed",
+            job_id=job_id,
+            elapsed_ms=round((time.perf_counter() - translation_started) * 1000, 1),
+            layout=parsed.layout,
+            display_text=dialogue,
+            translated_text=translated,
+            speaker=speaker,
+            descriptor=descriptor,
         )
         
         # Text-to-speech output
@@ -1590,17 +2365,31 @@ class OCRWorker:
                 self.tts_engine.runAndWait()
             except Exception as e:
                 logger.exception("TTS error: %s", e)
+
+        return TranslationOutcome(
+            job_id=job_id,
+            source_text=text_original,
+            display_text=dialogue,
+            translated_text=translated,
+            success=True,
+            layout=parsed.layout,
+        )
     
     def _translate_with_retry(
         self,
         text: str,
         max_retries: int = 3,
         marian_text: Optional[str] = None,
-    ) -> str:
+        job_id: Optional[str] = None,
+        segment: str = "dialogue",
+    ) -> Optional[str]:
         """Translate text using MarianMT (primary) or Google Translate (fallback)."""
         logger.debug(
-            "translate_with_retry backend=%s max_retries=%s source_text=%r "
-            "marian_text=%r normalized=%s",
+            "translate_with_retry worker_id=%s job_id=%s segment=%s backend=%s "
+            "max_retries=%s source_text=%r marian_text=%r normalized=%s",
+            getattr(self, "worker_id", "test-worker"),
+            job_id,
+            segment,
             self._translator.backend,
             max_retries,
             text,
@@ -1612,18 +2401,55 @@ class OCRWorker:
             try:
                 translated = self._translator.translate(text, marian_text=marian_text)
                 
-                if translated and translated != "[Translation unavailable]":
+                if translated and translated != TRANSLATION_UNAVAILABLE:
                     logger.info(
-                        "translation_attempt_succeeded attempt=%s result=%r",
+                        "translation_attempt_succeeded worker_id=%s job_id=%s "
+                        "segment=%s attempt=%s/%s result=%r",
+                        getattr(self, "worker_id", "test-worker"),
+                        job_id,
+                        segment,
                         attempt + 1,
+                        max_retries,
                         translated,
                     )
+                    self._pipeline_event(
+                        "translation_attempt_succeeded",
+                        job_id=job_id,
+                        segment=segment,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        result=translated,
+                    )
                     return translated
+                logger.warning(
+                    "translation_attempt_unavailable worker_id=%s job_id=%s "
+                    "segment=%s attempt=%s/%s backend=%s result=%r",
+                    getattr(self, "worker_id", "test-worker"),
+                    job_id,
+                    segment,
+                    attempt + 1,
+                    max_retries,
+                    self._translator.backend,
+                    translated,
+                )
+                self._pipeline_event(
+                    "translation_attempt_unavailable",
+                    job_id=job_id,
+                    segment=segment,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    backend=self._translator.backend,
+                    result=translated,
+                )
                     
             except Exception as e:
                 error_msg = str(e)
                 logger.exception(
-                    "translation_attempt_failed attempt=%s/%s error=%s",
+                    "translation_attempt_failed worker_id=%s job_id=%s segment=%s "
+                    "attempt=%s/%s error=%s",
+                    getattr(self, "worker_id", "test-worker"),
+                    job_id,
+                    segment,
                     attempt + 1,
                     max_retries,
                     error_msg,
@@ -1638,4 +2464,4 @@ class OCRWorker:
                 else:
                     break
         
-        return "[Translation unavailable]"
+        return None

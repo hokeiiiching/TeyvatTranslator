@@ -9,7 +9,7 @@ capture, intelligent vocabulary matching, and enhanced translation display.
 
 Author: hokeiiiching
 License: MIT
-Version: 1.1.2
+Version: 1.1.3
 """
 
 import os
@@ -55,11 +55,11 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 
 # Configure diagnostics before importing the UI and OCR stack so startup/model
 # failures are captured as well as steady-state translation activity.
-from src.diagnostics import configure_diagnostics
+from src.diagnostics import configure_diagnostics, record_pipeline_event
 
 configure_diagnostics(APP_VERSION)
 
@@ -88,9 +88,22 @@ def run_ocr_smoke() -> int:
 
         recognized = run_real_ocr_parity_smoke()
         logger.info("OCR parity smoke passed: %s", recognized)
+        record_pipeline_event(
+            "ocr_smoke",
+            "completed",
+            success=True,
+            recognized=recognized,
+        )
         return 0
     except Exception as exc:
         logger.exception("OCR parity smoke failed: %s: %s", type(exc).__name__, exc)
+        record_pipeline_event(
+            "ocr_smoke",
+            "completed",
+            success=False,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return 1
 
 
@@ -134,7 +147,7 @@ def main() -> None:
     # Create application instance
     app = QApplication(sys.argv)
     app.setApplicationName("Genshin Translator")
-    app.setApplicationVersion("1.1.2")
+    app.setApplicationVersion("1.1.3")
     app.setOrganizationName("GenshinTranslator")
     
     # Start OCR pre-initialization in background (reduces wait time on first translation)

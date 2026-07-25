@@ -50,13 +50,18 @@ so the curated vocabulary and speaker names work for both scripts.
 
 ### Diagnostics
 
-Each launch records a detailed session log plus the first three raw and
-preprocessed captures. In the app, click **Open Diagnostics** to inspect them.
-On Windows they are stored under
-`%LOCALAPPDATA%\TeyvatTranslator\diagnostics`. The log includes the selected
-script, shared OCR profile, model startup, foreground-window state, capture
-dimensions, raw OCR text and confidence, filtering decisions, translation
-backend/timing, and full exception traces.
+Each launch records a detailed text log, a machine-readable
+`pipeline-events.jsonl` timeline, the first three raw/preprocessed captures,
+and up to 20 event-time captures around OCR candidates and translation
+failures. In the app, click **Open Diagnostics** to inspect them. On Windows
+they are stored under `%LOCALAPPDATA%\TeyvatTranslator\diagnostics`.
+
+The diagnostics correlate capture-target selection, region coordinates,
+worker/frame/job IDs, raw OCR lines, confidence and bounding boxes, choice
+layout evidence, every translation attempt, cache decisions, retry backoff,
+overlay updates, timing, and full exception traces. Reproduce the problem once,
+then share the newest timestamped session folder indicated by
+`latest-session.txt`.
 
 ---
 
@@ -96,7 +101,7 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) (free).
 python build.py --clean --installer
 ```
 
-Output: `dist/TeyvatTranslator-v1.1.2-Setup.exe`
+Output: `dist/TeyvatTranslator-v1.1.3-Setup.exe`
 
 </details>
 

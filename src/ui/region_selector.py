@@ -6,9 +6,16 @@ Provides a fullscreen overlay for selecting a rectangular screen region.
 The selected coordinates are used for OCR capture.
 """
 
+import logging
+
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QCursor
+
+from src.diagnostics import record_pipeline_event
+
+
+logger = logging.getLogger("RegionSelector")
 
 
 class RegionSelector(QWidget):
@@ -29,6 +36,7 @@ class RegionSelector(QWidget):
     """
     
     region_selected = pyqtSignal(int, int, int, int)
+    selection_cancelled = pyqtSignal()
     
     def __init__(self, parent=None) -> None:
         """
@@ -53,9 +61,34 @@ class RegionSelector(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        # Cover entire primary screen
-        screen = QApplication.primaryScreen().geometry()
-        self.setGeometry(screen)
+        self._apply_virtual_desktop_geometry()
+
+    def _apply_virtual_desktop_geometry(self) -> QRect:
+        """Cover the union of every screen, including negative monitor offsets."""
+        screens = QApplication.screens()
+        if not screens:
+            geometry = QApplication.primaryScreen().geometry()
+        else:
+            geometry = QRect(screens[0].geometry())
+            for screen in screens[1:]:
+                geometry = geometry.united(screen.geometry())
+        self.setGeometry(geometry)
+        logger.info(
+            "region_selector_geometry virtual_desktop=%r screens=%r",
+            (geometry.x(), geometry.y(), geometry.width(), geometry.height()),
+            [
+                (
+                    screen.name(),
+                    screen.geometry().x(),
+                    screen.geometry().y(),
+                    screen.geometry().width(),
+                    screen.geometry().height(),
+                    screen.devicePixelRatio(),
+                )
+                for screen in screens
+            ],
+        )
+        return geometry
         
     def start_selection(self) -> None:
         """Begin the region selection process."""
@@ -63,9 +96,27 @@ class RegionSelector(QWidget):
         self.end = QPoint()
         self.is_selecting = False
         
+        geometry = self._apply_virtual_desktop_geometry()
+        logger.info(
+            "region_selection_started overlay_geometry=%r",
+            (geometry.x(), geometry.y(), geometry.width(), geometry.height()),
+        )
+        record_pipeline_event(
+            "region_selector",
+            "selection_started",
+            overlay_geometry=[
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+            ],
+        )
+
         # Change cursor to crosshair
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.CrossCursor))
         self.show()
+        self.raise_()
+        self.activateWindow()
         
     def paintEvent(self, event) -> None:
         """
@@ -151,6 +202,12 @@ class RegionSelector(QWidget):
             self.begin = event.pos()
             self.end = self.begin
             self.is_selecting = True
+            global_begin = self.mapToGlobal(self.begin)
+            logger.debug(
+                "region_drag_started widget=%r global=%r",
+                (self.begin.x(), self.begin.y()),
+                (global_begin.x(), global_begin.y()),
+            )
             self.update()
             
     def mouseMoveEvent(self, event) -> None:
@@ -165,40 +222,54 @@ class RegionSelector(QWidget):
             self.end = event.pos()
             self.is_selecting = False
             
-            # Get screen geometry offset (important for multi-monitor setups)
-            screen = QApplication.primaryScreen().geometry()
-            screen_offset_x = screen.x()
-            screen_offset_y = screen.y()
-            
-            # Convert widget-relative coordinates to global screen coordinates
-            # The overlay widget starts at screen position (0,0) relative to primary screen
-            x1 = min(self.begin.x(), self.end.x()) + screen_offset_x
-            y1 = min(self.begin.y(), self.end.y()) + screen_offset_y
-            x2 = max(self.begin.x(), self.end.x()) + screen_offset_x
-            y2 = max(self.begin.y(), self.end.y()) + screen_offset_y
-            
-            # Debug output
-            print(f"\n{'='*50}")
-            print(f"REGION SELECTED")
-            print(f"{'='*50}")
-            print(f"  Screen offset: ({screen_offset_x}, {screen_offset_y})")
-            print(f"  Widget coords: ({self.begin.x()}, {self.begin.y()}) to ({self.end.x()}, {self.end.y()})")
-            print(f"  Global coords: ({x1}, {y1}) to ({x2}, {y2})")
-            print(f"  Size: {x2-x1}x{y2-y1} pixels")
+            global_begin = self.mapToGlobal(self.begin)
+            global_end = self.mapToGlobal(self.end)
+            x1 = min(global_begin.x(), global_end.x())
+            y1 = min(global_begin.y(), global_end.y())
+            x2 = max(global_begin.x(), global_end.x())
+            y2 = max(global_begin.y(), global_end.y())
+
+            logger.info(
+                "region_drag_finished widget_start=%r widget_end=%r "
+                "global_bbox=%r size=%sx%s valid=%s",
+                (self.begin.x(), self.begin.y()),
+                (self.end.x(), self.end.y()),
+                (x1, y1, x2, y2),
+                x2 - x1,
+                y2 - y1,
+                x2 - x1 > 10 and y2 - y1 > 10,
+            )
+            record_pipeline_event(
+                "region_selector",
+                "selection_finished",
+                widget_start=[self.begin.x(), self.begin.y()],
+                widget_end=[self.end.x(), self.end.y()],
+                global_bbox=[x1, y1, x2, y2],
+                width=x2 - x1,
+                height=y2 - y1,
+                valid=x2 - x1 > 10 and y2 - y1 > 10,
+            )
             
             # Only emit signal if region is large enough
             if x2 - x1 > 10 and y2 - y1 > 10:
                 self.region_selected.emit(x1, y1, x2, y2)
+            else:
+                logger.warning("region_selection_rejected reason=too-small")
+                self.selection_cancelled.emit()
             
             self._finish_selection()
             
     def keyPressEvent(self, event) -> None:
         """Handle keyboard input."""
         if event.key() == Qt.Key.Key_Escape:
+            logger.info("region_selection_cancelled reason=escape")
+            record_pipeline_event(
+                "region_selector",
+                "selection_cancelled",
+                reason="escape",
+            )
             self._finish_selection()
-            # Show main window if available (stored as attribute)
-            if hasattr(self, 'main_window') and self.main_window:
-                self.main_window.show()
+            self.selection_cancelled.emit()
                 
     def _finish_selection(self) -> None:
         """Clean up after selection completes or is cancelled."""

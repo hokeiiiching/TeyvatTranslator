@@ -2,7 +2,8 @@ import inspect
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from threading import Lock
+from unittest.mock import ANY, MagicMock, patch
 
 
 # Text-to-speech is optional for these worker-level tests. Stub it only when the
@@ -63,6 +64,11 @@ class FakeTranslateWindow:
 
     def update_translation(self, chinese, english, context):
         self.updates.append((chinese, english, context))
+
+
+class FakeShelf(dict):
+    def sync(self):
+        pass
 
 
 class OCRLanguageParityTests(unittest.TestCase):
@@ -255,8 +261,164 @@ class OCRLanguageParityTests(unittest.TestCase):
                     dialogue,
                     max_retries=3,
                     marian_text=marian_text,
+                    job_id=ANY,
+                    segment="dialogue",
                 )
                 self.assertEqual(worker.translate_window.updates[-1][0], dialogue)
+
+    def test_aligned_traveller_choices_translate_individually(self):
+        worker = self._worker("chi_sim")
+        worker._translate_with_retry.side_effect = [
+            "Let's set out together.",
+            "I want to stay here.",
+        ]
+        text = "一起出发吧\n我想留在这里"
+        result = ocr.OCRResult(
+            text=text,
+            confidence=0.96,
+            num_lines=2,
+            chinese_chars=11,
+            total_chars=11,
+            bounding_boxes=[
+                {
+                    "text": "一起出发吧",
+                    "confidence": 0.97,
+                    "box": [900.0, 300.0, 1250.0, 350.0],
+                },
+                {
+                    "text": "我想留在这里",
+                    "confidence": 0.95,
+                    "box": [906.0, 390.0, 1320.0, 440.0],
+                },
+            ],
+            image_size=(2000, 1000),
+        )
+
+        outcome = worker._process_translation(
+            text,
+            ocr_result=result,
+            job_id="choice-job",
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.layout, "choices")
+        chinese, english, context = worker.translate_window.updates[-1]
+        self.assertEqual(chinese, text)
+        self.assertEqual(
+            english,
+            "Let's set out together.\nI want to stay here.",
+        )
+        self.assertEqual(context["layout"], "choices")
+        self.assertEqual(context["choices"], text.splitlines())
+        self.assertEqual(
+            [call.kwargs["segment"] for call in worker._translate_with_retry.call_args_list],
+            ["choice-1", "choice-2"],
+        )
+        self.assertEqual(
+            [call.args[0] for call in worker._translate_with_retry.call_args_list],
+            text.splitlines(),
+        )
+
+    def test_choice_markers_do_not_destabilize_or_pollute_translation(self):
+        worker = self._worker("chi_tra")
+        parsed = worker._parse_translation_input(
+            "◆ 一起出發吧\n◇ 我想留在這裡"
+        )
+
+        self.assertEqual(parsed.layout, "choices")
+        self.assertEqual(parsed.choices, ["一起出發吧", "我想留在這裡"])
+        self.assertTrue(any("choice-markers" in item for item in parsed.evidence))
+
+    def test_unavailable_translation_is_not_cached_or_displayed(self):
+        worker = self._worker("chi_sim")
+        worker._translate_with_retry.return_value = None
+
+        failed = worker._process_translation(
+            "这个选项暂时失败。",
+            job_id="failed-job",
+        )
+
+        self.assertFalse(failed.success)
+        worker._cache_set.assert_not_called()
+        self.assertEqual(worker.translate_window.updates, [])
+
+        worker._translate_with_retry.return_value = "This option now works."
+        succeeded = worker._process_translation(
+            "这个选项暂时失败。",
+            job_id="retry-job",
+        )
+
+        self.assertTrue(succeeded.success)
+        self.assertEqual(
+            worker.translate_window.updates[-1][1],
+            "This option now works.",
+        )
+
+    def test_stale_unavailable_cache_entry_is_removed(self):
+        worker = object.__new__(ocr.OCRWorker)
+        worker.worker_id = "cache-test"
+        worker.from_lang = "chi_tra"
+        worker.frame_count = 0
+        worker._cache_lock = Lock()
+        worker._shelve_cache = FakeShelf(
+            {"chi_tra:choice:一起出發吧": ocr.TRANSLATION_UNAVAILABLE}
+        )
+        worker._pipeline_event = MagicMock()
+
+        cached = worker._cache_get("chi_tra:choice:一起出發吧")
+
+        self.assertIsNone(cached)
+        self.assertNotIn(
+            "chi_tra:choice:一起出發吧",
+            worker._shelve_cache,
+        )
+        worker._pipeline_event.assert_called_once_with(
+            "cache_entry_discarded",
+            cache_key="chi_tra:choice:一起出發吧",
+            cached_value=ocr.TRANSLATION_UNAVAILABLE,
+        )
+
+    def test_current_text_commits_only_after_successful_translation(self):
+        worker = object.__new__(ocr.OCRWorker)
+        worker.worker_id = "worker-test"
+        worker.frame_count = 10
+        worker.current_text = None
+        worker._failed_text = None
+        worker._failed_text_attempts = 0
+        worker._translation_retry_after = 0.0
+        worker._pending_job_started = ocr.time.perf_counter()
+        worker._last_capture_image = None
+        worker._update_status = MagicMock()
+        worker._pipeline_event = MagicMock()
+        worker._save_diagnostic_snapshot = MagicMock()
+        text = "我们走吧。"
+
+        worker._handle_translation_outcome(
+            ocr.TranslationOutcome(
+                job_id="job-1",
+                source_text=text,
+                display_text=text,
+                translated_text="",
+                success=False,
+                layout="dialogue",
+                error="temporary backend failure",
+            )
+        )
+        self.assertIsNone(worker.current_text)
+        self.assertGreater(worker._translation_retry_after, ocr.time.perf_counter())
+
+        worker._handle_translation_outcome(
+            ocr.TranslationOutcome(
+                job_id="job-2",
+                source_text=text,
+                display_text=text,
+                translated_text="Let's go.",
+                success=True,
+                layout="dialogue",
+            )
+        )
+        self.assertEqual(worker.current_text, text)
+        self.assertEqual(worker._translation_retry_after, 0.0)
 
 
 if __name__ == "__main__":

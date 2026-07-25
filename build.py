@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Build configuration
 APP_NAME = "TeyvatTranslator"
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 BUILD_DIR = Path("build")
 DIST_DIR = Path("dist")
 SPEC_FILE = Path("TeyvatTranslator.spec")

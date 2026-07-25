@@ -18,8 +18,10 @@ from pathlib import Path
 from src.diagnostics import (
     configure_diagnostics,
     get_capture_directory,
+    get_events_file,
     get_log_file,
     LATEST_SESSION_FILE,
+    record_pipeline_event,
 )
 
 configure_diagnostics("test-version")
@@ -27,6 +29,12 @@ logging.getLogger("DiagnosticsTest").info(
     "source=chi_tra shared_profile=ch raw_text=%r confidence=%.3f",
     "鍾離：風與龍的冒險。",
     0.987,
+)
+record_pipeline_event(
+    "test",
+    "traditional_choice_detected",
+    source="chi_tra",
+    choices=["一起出發吧", "我想留在這裡"],
 )
 for handler in logging.getLogger().handlers:
     handler.flush()
@@ -38,6 +46,9 @@ text = log_file.read_text(encoding="utf-8")
 assert "app_version=test-version" in text
 assert "source=chi_tra shared_profile=ch" in text
 assert "鍾離：風與龍的冒險。" in text
+events = get_events_file().read_text(encoding="utf-8")
+assert '"event": "traditional_choice_detected"' in events
+assert "一起出發吧" in events
 print(log_file)
 """
             env = os.environ.copy()
@@ -62,6 +73,7 @@ print(log_file)
 
         self.assertIn("latest-session.txt", workflow)
         self.assertIn("diagnostics.log", workflow)
+        self.assertIn("pipeline-events.jsonl", workflow)
         self.assertNotIn(
             r".\dist\TeyvatTranslator\TeyvatTranslator.log",
             workflow,

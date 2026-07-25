@@ -6,6 +6,7 @@ Provides the floating overlay window that displays OCR results
 and translations with context-aware vocabulary information.
 """
 
+import logging
 from typing import Dict, List, Optional, Any
 
 from PyQt6.QtWidgets import (
@@ -16,10 +17,13 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMetaObject, Q_ARG, Qt as QtCore, QPoin
 from PyQt6.QtGui import QFont, QCursor
 import pyperclip
 
+from src.diagnostics import record_pipeline_event
+
 
 CHINESE_HTML_FONT_FAMILY = (
     "HYWenHei-85W, Microsoft JhengHei, Microsoft YaHei, Noto Sans CJK TC"
 )
+logger = logging.getLogger("TranslateWindow")
 
 
 class TranslateWindow(QMainWindow):
@@ -303,6 +307,8 @@ class TranslateWindow(QMainWindow):
         speaker_english = context.get('speaker_english', '') if context else ''
         descriptor = context.get('descriptor', '') if context else ''
         descriptor_english = context.get('descriptor_english', '') if context else ''
+        layout = context.get('layout', 'dialogue') if context else 'dialogue'
+        job_id = context.get('job_id') if context else None
         
         # === BUILD SPEAKER SECTION HTML ===
         # Display speaker info in stacked format: Mandarin, Pinyin, English, Descriptor (4 lines)
@@ -342,7 +348,54 @@ class TranslateWindow(QMainWindow):
         
         # === BUILD DIALOGUE HTML using TABLE layout (Qt properly supports tables) ===
         # Row 1: Pinyin syllables | Row 2: Chinese characters
-        if chinese and pinyin_text:
+        if layout == "choices":
+            pinyin_parts = pinyin_text.split()
+            pinyin_idx = 0
+            choice_blocks = []
+            for option_index, option in enumerate(chinese.splitlines(), start=1):
+                pinyin_cells = []
+                char_cells = []
+                for char in option:
+                    if '\u4e00' <= char <= '\u9fff':
+                        py = (
+                            pinyin_parts[pinyin_idx]
+                            if pinyin_idx < len(pinyin_parts)
+                            else ""
+                        )
+                        pinyin_idx += 1
+                        pinyin_cells.append(
+                            '<td align="center" style="padding:0 2px;">'
+                            f'<span style="font-size:12px;color:#7eb8c9;'
+                            f'font-family:Consolas;">{py}</span></td>'
+                        )
+                        char_cells.append(
+                            '<td align="center" style="padding:0 2px;">'
+                            f'<span style="font-size:21px;color:#c9a962;'
+                            f'font-family:{CHINESE_HTML_FONT_FAMILY};">{char}</span></td>'
+                        )
+                    else:
+                        pinyin_cells.append(
+                            '<td align="center"><span style="font-size:12px;">'
+                            '&nbsp;</span></td>'
+                        )
+                        char_cells.append(
+                            '<td align="center" style="padding:0 1px;">'
+                            f'<span style="font-size:21px;color:#c9a962;">'
+                            f'{char}</span></td>'
+                        )
+                choice_blocks.append(
+                    '<div style="margin:7px 0;padding:7px 10px;'
+                    'border-left:2px solid rgba(201,169,98,0.5);">'
+                    f'<div style="color:#8080a0;font-size:10px;">'
+                    f'OPTION {option_index}</div>'
+                    '<table cellspacing="0" cellpadding="0" '
+                    'style="border-collapse:collapse;">'
+                    f'<tr>{"".join(pinyin_cells)}</tr>'
+                    f'<tr>{"".join(char_cells)}</tr>'
+                    '</table></div>'
+                )
+            dialogue_html = "".join(choice_blocks)
+        elif chinese and pinyin_text:
             pinyin_parts = pinyin_text.split()
             pinyin_cells = []
             char_cells = []
@@ -390,6 +443,26 @@ class TranslateWindow(QMainWindow):
             self.english_label, "setText",
             Qt.ConnectionType.QueuedConnection,
             Q_ARG(str, english or "")
+        )
+        logger.info(
+            "overlay_update_queued job_id=%s layout=%s chinese=%r english=%r "
+            "speaker=%r descriptor=%r",
+            job_id,
+            layout,
+            chinese,
+            english,
+            speaker,
+            descriptor,
+        )
+        record_pipeline_event(
+            "translate_window",
+            "overlay_update_queued",
+            job_id=job_id,
+            layout=layout,
+            chinese=chinese,
+            english=english,
+            speaker=speaker,
+            descriptor=descriptor,
         )
     
     def _generate_ruby_html(self, chinese: str, pinyin: str) -> str:

@@ -21,12 +21,16 @@ class ReleaseVersionTests(unittest.TestCase):
         app_version = re.search(
             r'app\.setApplicationVersion\("([^"]+)"\)', main
         ).group(1)
+        diagnostics_version = re.search(
+            r'APP_VERSION = "([^"]+)"', main
+        ).group(1)
         about_version = re.search(
             r'version = QLabel\("v([^"]+)"\)', main_window
         ).group(1)
 
         self.assertEqual(installer_version, version)
         self.assertEqual(app_version, version)
+        self.assertEqual(diagnostics_version, version)
         self.assertEqual(about_version, version)
 
 

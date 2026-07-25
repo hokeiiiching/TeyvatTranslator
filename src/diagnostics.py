@@ -8,6 +8,7 @@ launch overwriting the evidence.
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import logging
 import os
 import platform
@@ -48,12 +49,14 @@ SESSION_DIRECTORY = DIAGNOSTICS_ROOT / (
     f"{SESSION_STARTED:%Y%m%d-%H%M%S}-{SESSION_ID}"
 )
 LOG_FILE = SESSION_DIRECTORY / "diagnostics.log"
+EVENTS_FILE = SESSION_DIRECTORY / "pipeline-events.jsonl"
 CAPTURE_DIRECTORY = SESSION_DIRECTORY / "captures"
 LATEST_SESSION_FILE = DIAGNOSTICS_ROOT / "latest-session.txt"
 
 _configured = False
 _stdio_file = None
 _original_excepthook = sys.excepthook
+_event_lock = threading.Lock()
 
 
 def configure_diagnostics(app_version: str) -> Path:
@@ -66,6 +69,7 @@ def configure_diagnostics(app_version: str) -> Path:
     CAPTURE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     LATEST_SESSION_FILE.write_text(str(SESSION_DIRECTORY), encoding="utf-8")
+    EVENTS_FILE.touch(exist_ok=True)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
@@ -97,6 +101,7 @@ def configure_diagnostics(app_version: str) -> Path:
     logger.info("session_id=%s app_version=%s", SESSION_ID, app_version)
     logger.info("session_directory=%s", SESSION_DIRECTORY)
     logger.info("log_file=%s", LOG_FILE)
+    logger.info("pipeline_events_file=%s", EVENTS_FILE)
     log_runtime_environment(app_version)
     return LOG_FILE
 
@@ -179,6 +184,39 @@ def get_session_directory() -> Path:
 
 def get_log_file() -> Path:
     return LOG_FILE
+
+
+def get_events_file() -> Path:
+    return EVENTS_FILE
+
+
+def record_pipeline_event(component: str, event: str, **details) -> None:
+    """Append a machine-readable pipeline event without risking app execution."""
+    try:
+        SESSION_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "session_id": SESSION_ID,
+            "component": component,
+            "event": event,
+            **details,
+        }
+        with _event_lock:
+            with EVENTS_FILE.open("a", encoding="utf-8") as event_file:
+                event_file.write(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        default=lambda value: repr(value),
+                    )
+                    + "\n"
+                )
+    except Exception:
+        logging.getLogger("Diagnostics").exception(
+            "Could not record pipeline event component=%s event=%s",
+            component,
+            event,
+        )
 
 
 def get_capture_directory() -> Path:

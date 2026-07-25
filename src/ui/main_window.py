@@ -34,6 +34,7 @@ from src.diagnostics import (
     get_diagnostics_root,
     get_log_file,
     open_diagnostics_folder,
+    record_pipeline_event,
 )
 
 
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self.translate_window: Optional[TranslateWindow] = None
         self.ocr_worker: Optional[OCRWorker] = None
         self.selected_region: Optional[Tuple[int, int, int, int]] = None
+        self._capture_target_mode: Optional[str] = None
         
         self._setup_window()
         self._create_ui()
@@ -140,6 +142,9 @@ class MainWindow(QMainWindow):
         self.region_selector = RegionSelector()
         self.region_selector.main_window = self  # Store reference for callbacks
         self.region_selector.region_selected.connect(self._on_region_selected)
+        self.region_selector.selection_cancelled.connect(
+            self._on_region_selection_cancelled
+        )
         
     def _create_translate_tab(self) -> QWidget:
         """
@@ -233,6 +238,9 @@ class MainWindow(QMainWindow):
         self.window_combo.addItem("-- Select a window --")
         self.window_combo.setMinimumHeight(44)
         self.window_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.window_combo.currentIndexChanged.connect(
+            self._on_window_selection_changed
+        )
         window_layout.addWidget(self.window_combo, 3)  # Takes 3 parts of space
         
         # Auto-detect Genshin button
@@ -304,7 +312,10 @@ class MainWindow(QMainWindow):
 
         diagnostics_layout = QHBoxLayout()
         diagnostics_layout.setSpacing(10)
-        diagnostics_note = QLabel("Detailed logs and 3 sample captures are recorded each launch.")
+        diagnostics_note = QLabel(
+            "Detailed logs, a pipeline event trail, and up to 20 event captures "
+            "are recorded each launch."
+        )
         diagnostics_note.setStyleSheet("color: #8080a0; font-size: 10px;")
         diagnostics_note.setWordWrap(True)
         diagnostics_layout.addWidget(diagnostics_note, 1)
@@ -343,7 +354,14 @@ class MainWindow(QMainWindow):
         """Refresh the list of available windows."""
         try:
             from src.engine.window_capture import get_window_list
-            
+
+            previous_mode = self._capture_target_mode
+            previous_title = (
+                self.window_combo.currentText()
+                if self.window_combo.currentIndex() > 0
+                else None
+            )
+            self.window_combo.blockSignals(True)
             self.window_combo.clear()
             self.window_combo.addItem("(Screen Region - select below)")
             
@@ -355,10 +373,53 @@ class MainWindow(QMainWindow):
                 # Truncate long titles
                 title = w['title'][:60] + "..." if len(w['title']) > 60 else w['title']
                 self.window_combo.addItem(f"{title} ({w['size'][0]}x{w['size'][1]})")
-                
+            if previous_mode == "window" and previous_title:
+                for index in range(1, self.window_combo.count()):
+                    if previous_title.rsplit(" (", 1)[0] in self.window_combo.itemText(index):
+                        self.window_combo.setCurrentIndex(index)
+                        break
+            self.window_combo.blockSignals(False)
+
         except Exception as e:
+            self.window_combo.blockSignals(False)
             logger.exception("Could not list windows: %s", e)
             self._windows_cache = {}
+
+    def _on_window_selection_changed(self, index: int) -> None:
+        """Make a user-selected window the explicit capture target."""
+        if index > 0:
+            old_region = self.selected_region
+            self.selected_region = None
+            self._capture_target_mode = "window"
+            logger.info(
+                "capture_target_changed mode=window combo_index=%s text=%r "
+                "cleared_region=%r",
+                index,
+                self.window_combo.currentText(),
+                old_region,
+            )
+            record_pipeline_event(
+                "main_window",
+                "capture_target_selected",
+                mode="window",
+                window_combo_index=index,
+                window_combo_text=self.window_combo.currentText(),
+                cleared_region=list(old_region) if old_region else None,
+            )
+        elif self.selected_region:
+            self._capture_target_mode = "region"
+            logger.info(
+                "capture_target_changed mode=region region=%r reason=combo-region-entry",
+                self.selected_region,
+            )
+        else:
+            self._capture_target_mode = None
+            logger.info("capture_target_changed mode=none combo_index=%s", index)
+            record_pipeline_event(
+                "main_window",
+                "capture_target_cleared",
+                window_combo_index=index,
+            )
     
     def _on_find_genshin(self) -> None:
         """Auto-detect and select Genshin Impact window."""
@@ -553,7 +614,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(name)
         
         # Version
-        version = QLabel("v1.1.2")
+        version = QLabel("v1.1.3")
         version.setObjectName("subtitle")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
@@ -599,6 +660,14 @@ class MainWindow(QMainWindow):
     
     def _on_select_region(self) -> None:
         """Handle region selection button click."""
+        logger.info(
+            "region_selection_requested previous_mode=%s combo_index=%s "
+            "combo_text=%r previous_region=%r",
+            self._capture_target_mode,
+            self.window_combo.currentIndex(),
+            self.window_combo.currentText(),
+            self.selected_region,
+        )
         self.hide()
         self.region_selector.start_selection()
         
@@ -611,17 +680,43 @@ class MainWindow(QMainWindow):
             x2, y2: Bottom-right corner coordinates
         """
         self.selected_region = (x1, y1, x2, y2)
+        self._capture_target_mode = "region"
+        self.window_combo.blockSignals(True)
+        self.window_combo.setCurrentIndex(0)
+        self.window_combo.blockSignals(False)
         logger.info(
-            "screen_region_selected bbox=(%s,%s,%s,%s) size=%sx%s",
+            "screen_region_selected mode=region bbox=(%s,%s,%s,%s) size=%sx%s "
+            "window_selection_cleared=%s",
             x1,
             y1,
             x2,
             y2,
             x2 - x1,
             y2 - y1,
+            self.window_combo.currentIndex() == 0,
+        )
+        record_pipeline_event(
+            "main_window",
+            "capture_target_selected",
+            mode="region",
+            bbox=[x1, y1, x2, y2],
+            width=x2 - x1,
+            height=y2 - y1,
+            window_combo_index=self.window_combo.currentIndex(),
         )
         self.status_label.setText(f"Region selected: {x2-x1}×{y2-y1} pixels")
         self.status_label.setStyleSheet("color: #4ade80;")
+        self.show()
+
+    def _on_region_selection_cancelled(self) -> None:
+        """Restore the main window without changing the existing target."""
+        logger.info(
+            "region_selection_finished_without_change active_mode=%s region=%r "
+            "combo_index=%s",
+            self._capture_target_mode,
+            self.selected_region,
+            self.window_combo.currentIndex(),
+        )
         self.show()
         
     def _on_start_translation(self) -> None:
@@ -629,17 +724,45 @@ class MainWindow(QMainWindow):
         # Check if window selected or region selected
         selected_window = None
         window_idx = self.window_combo.currentIndex()
-        
-        if window_idx > 0:  # A window is selected (not first item)
+
+        if self._capture_target_mode == "window" and window_idx > 0:
             # Get window from cache
             window_text = self.window_combo.currentText()
             for title, info in getattr(self, '_windows_cache', {}).items():
                 if title in window_text:
                     selected_window = info
                     break
+
+        use_region = (
+            self._capture_target_mode == "region"
+            and self.selected_region is not None
+        )
+        logger.info(
+            "capture_target_resolved requested_mode=%s combo_index=%s "
+            "combo_text=%r selected_window=%r region=%r use_region=%s",
+            self._capture_target_mode,
+            window_idx,
+            self.window_combo.currentText(),
+            selected_window["title"] if selected_window else None,
+            self.selected_region,
+            use_region,
+        )
+        record_pipeline_event(
+            "main_window",
+            "capture_target_resolved",
+            requested_mode=self._capture_target_mode,
+            window_combo_index=window_idx,
+            window_combo_text=self.window_combo.currentText(),
+            selected_window=selected_window["title"] if selected_window else None,
+            selected_hwnd=selected_window["hwnd"] if selected_window else None,
+            region=list(self.selected_region) if self.selected_region else None,
+            resolved_mode=(
+                "window" if selected_window else "region" if use_region else "none"
+            ),
+        )
         
         # Require either window or region selection
-        if not selected_window and not self.selected_region:
+        if not selected_window and not use_region:
             QMessageBox.warning(
                 self, 
                 "No Target Selected",
@@ -723,7 +846,7 @@ class MainWindow(QMainWindow):
                 f"Translating {get_source_label(from_lang)} {mode_str}: "
                 f"{selected_window['title'][:25]}..."
             )
-        else:
+        elif use_region:
             # Screen region capture mode
             x1, y1, x2, y2 = self.selected_region
             

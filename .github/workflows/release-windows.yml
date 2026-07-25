@@ -80,6 +80,13 @@ jobs:
           if (!(Test-Path $logPath)) {
             throw "Frozen smoke did not create diagnostics log: $logPath"
           }
+          $eventsPath = Join-Path $sessionDirectory "pipeline-events.jsonl"
+          if (!(Test-Path $eventsPath)) {
+            throw "Frozen smoke did not create pipeline events: $eventsPath"
+          }
+          if (!(Select-String -Path $eventsPath -Pattern '"component": "ocr_smoke"' -Quiet)) {
+            throw "Frozen smoke pipeline events did not contain its completion marker"
+          }
           Get-Content $logPath
           $smokeDiagnostics = ".\dist\frozen-smoke-diagnostics"
           New-Item -ItemType Directory -Force -Path $smokeDiagnostics | Out-Null

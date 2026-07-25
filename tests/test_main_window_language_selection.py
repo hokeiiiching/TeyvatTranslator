@@ -62,6 +62,7 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
     def test_selected_traditional_code_reaches_the_ocr_worker(self):
         self.window.source_lang_buttons["chi_tra"].setChecked(True)
         self.window.selected_region = (10, 20, 310, 220)
+        self.window._capture_target_mode = "region"
         overlay = MagicMock()
         worker = MagicMock()
 
@@ -80,6 +81,7 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
     def test_failed_traditional_preflight_does_not_start_ocr(self):
         self.window.source_lang_buttons["chi_tra"].setChecked(True)
         self.window.selected_region = (10, 20, 310, 220)
+        self.window._capture_target_mode = "region"
 
         with (
             patch.object(
@@ -98,6 +100,7 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
     def test_worker_start_failure_replaces_waiting_message_with_diagnostic_error(self):
         self.window.source_lang_buttons["chi_tra"].setChecked(True)
         self.window.selected_region = (10, 20, 310, 220)
+        self.window._capture_target_mode = "region"
         overlay = MagicMock()
 
         with (
@@ -125,6 +128,51 @@ class MainWindowLanguageSelectionTests(unittest.TestCase):
             self.window.diagnostics_btn.click()
 
         open_folder.assert_called_once_with()
+
+    def test_new_region_overrides_a_stale_selected_window(self):
+        self.window.window_combo.clear()
+        self.window.window_combo.addItem("(Screen Region - select below)")
+        self.window.window_combo.addItem("Genshin Impact (1920x1080)")
+        self.window._windows_cache = {
+            "Genshin Impact": {
+                "hwnd": 123,
+                "title": "Genshin Impact",
+                "rect": (0, 0, 1920, 1080),
+                "size": (1920, 1080),
+            }
+        }
+        self.window.window_combo.setCurrentIndex(1)
+        self.assertEqual(self.window._capture_target_mode, "window")
+
+        self.window._on_region_selected(100, 200, 700, 800)
+
+        self.assertEqual(self.window._capture_target_mode, "region")
+        self.assertEqual(self.window.window_combo.currentIndex(), 0)
+        self.assertEqual(self.window.selected_region, (100, 200, 700, 800))
+
+        overlay = MagicMock()
+        worker = MagicMock()
+        with (
+            patch.object(main_window, "validate_source_language_support"),
+            patch.object(main_window, "TranslateWindow", return_value=overlay),
+            patch.object(main_window, "OCRWorker", return_value=worker) as worker_class,
+        ):
+            self.window._on_start_translation()
+
+        self.assertEqual(worker_class.call_args.args[:4], (100, 200, 700, 800))
+        self.assertNotIn("window_hwnd", worker_class.call_args.kwargs)
+
+    def test_selecting_a_window_after_a_region_clears_the_region(self):
+        self.window.selected_region = (100, 200, 700, 800)
+        self.window._capture_target_mode = "region"
+        self.window.window_combo.clear()
+        self.window.window_combo.addItem("(Screen Region - select below)")
+        self.window.window_combo.addItem("Genshin Impact (1920x1080)")
+
+        self.window.window_combo.setCurrentIndex(1)
+
+        self.assertEqual(self.window._capture_target_mode, "window")
+        self.assertIsNone(self.window.selected_region)
 
 
 if __name__ == "__main__":
