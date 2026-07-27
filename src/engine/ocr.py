@@ -479,9 +479,12 @@ NPC_ROLE_SUFFIXES = {
     '将军', '统领', '千户', '百户', '旗官', '军官',
     
     # Professional roles
-    '商人', '学者', '研究员', '医生', '护士', '厨师', '铁匠', '工匠',
-    '猎人', '渔夫', '农夫', '船长', '水手', '向导', '记者', '画家',
-    '诗人', '歌手', '舞者', '乐师', '演员', '冒险家', '旅行者',
+    '商人', '学者', '學者', '研究员', '研究員', '医生', '醫生', '护士', '護士',
+    '厨师', '廚師', '铁匠', '鐵匠', '工匠', '猎人', '獵人', '渔夫', '漁夫',
+    '农夫', '農夫', '船长', '船長', '水手', '向导', '向導', '记者', '記者',
+    '画家', '畫家', '诗人', '詩人', '歌手', '舞者', '乐师', '樂師', '演员', '演員',
+    '制片人', '製片人', '摄影师', '攝影師', '灯光师', '燈光師', '剪辑师', '剪輯師',
+    '冒险家', '冒險家', '旅行者',
     
     # Service roles
     '助手', '侍者', '服务员', '接待', '大厅', '前台', '职员', '伙计',
@@ -507,7 +510,7 @@ NPC_ORGANIZATION_KEYWORDS = {
     '千岩军', '层岩巨渊', '琉璃亭',
     
     # Inazuma
-    '稻妻城', '天领奉行', '社奉行', '勘定奉行', '海祇岛', '�的鬼岛',
+    '稻妻城', '天领奉行', '社奉行', '勘定奉行', '海祇岛', '的鬼岛',
     '八重堂', '木漏茶室', '神里家', '九条家', '柊家',
     
     # Sumeru
@@ -545,6 +548,12 @@ def is_descriptor_line(line: str) -> bool:
     # Skip empty lines
     if not line:
         return False
+        
+    # Descriptors are short titles (<= 15 chars) and NEVER contain sentence punctuation
+    if len(line) > 15:
+        return False
+    if any(p in line for p in ('，', '。', '！', '？', ',', '.', '!', '?')):
+        return False
     
     # Pattern 1: Contains 「」brackets (organization/place name)
     # These are almost always descriptors like 「特许食堂」主管
@@ -561,12 +570,8 @@ def is_descriptor_line(line: str) -> bool:
     # Pattern 3: Contains organization/faction keyword
     for keyword in NPC_ORGANIZATION_KEYWORDS:
         if keyword in line:
-            # Make sure it's not a long dialogue line that just mentions the org
-            # Descriptors are typically short (< 15 chars)
-            if len(line) <= 15:
-                logger.debug(f"  Descriptor detected (org keyword '{keyword}'): {line}")
-                return True
-    
+            logger.debug(f"  Descriptor detected (org keyword '{keyword}'): {line}")
+            return True
     # Pattern 4: Short line with only Chinese chars and no punctuation
     # Descriptors don't usually have dialogue punctuation (。？！)
     chinese_chars = [c for c in line if '\u4e00' <= c <= '\u9fff']
@@ -631,6 +636,9 @@ class OCRWorker:
         self._enable_context = enable_context  # Private var, accessed via property
         self.window_hwnd = window_hwnd  # If set, capture from this window
         self.dialogue_only = dialogue_only  # If True, focus on dialogue area only
+        # Only allow Traveller choice menu classification (OPTION 1, OPTION 2)
+        # when using the auto-selected default chat region feature (window_hwnd is set AND dialogue_only is True).
+        self.allow_choices = bool(window_hwnd and dialogue_only)
         self.worker_id = uuid.uuid4().hex[:10]
         
         # State
@@ -748,13 +756,16 @@ class OCRWorker:
 
     def _pipeline_event(self, event: str, **details) -> None:
         """Record a correlated machine-readable event for this worker."""
+        payload = {
+            "worker_id": getattr(self, "worker_id", "test-worker"),
+            "frame": getattr(self, "frame_count", 0),
+            "source_language": getattr(self, "from_lang", "unknown"),
+        }
+        payload.update(details)
         record_pipeline_event(
             "ocr_worker",
             event,
-            worker_id=getattr(self, "worker_id", "test-worker"),
-            frame=getattr(self, "frame_count", 0),
-            source_language=getattr(self, "from_lang", "unknown"),
-            **details,
+            **payload,
         )
     
     @property
@@ -785,7 +796,8 @@ class OCRWorker:
                 logger.info(f"Loaded persistent cache from {self._cache_path}")
             if key in self._shelve_cache:
                 value = self._shelve_cache[key]
-                if not value or value == TRANSLATION_UNAVAILABLE:
+                from src.engine.translator import is_valid_english_translation
+                if not is_valid_english_translation(key, value):
                     logger.warning(
                         "cache_entry_discarded worker_id=%s key=%r value=%r",
                         getattr(self, "worker_id", "test-worker"),
@@ -816,7 +828,8 @@ class OCRWorker:
     
     def _cache_set(self, key: str, value: str) -> None:
         """Set a value in the persistent cache with LRU eviction (thread-safe)."""
-        if not value or value == TRANSLATION_UNAVAILABLE:
+        from src.engine.translator import is_valid_english_translation
+        if not is_valid_english_translation(key, value):
             logger.warning(
                 "cache_write_refused worker_id=%s key=%r value=%r",
                 getattr(self, "worker_id", "test-worker"),
@@ -892,6 +905,22 @@ class OCRWorker:
         lookup = normalize_for_lookup(line.strip(), self.from_lang)
         return lookup in _KNOWN_SPEAKER_LOOKUPS
 
+    def _is_speaker_name_candidate(self, line: str) -> bool:
+        """Check if a string looks like an NPC / Speaker name (e.g. 樂平波琳, 派蒙, 鍾離)."""
+        line = line.strip()
+        if not line:
+            return False
+        if self._is_known_speaker(line):
+            return True
+        if any(c in line for c in '，。！？,.!?~～'):
+            return False
+        if any(line.endswith(p) for p in ('吧', '嗎', '呢', '啦', '呀', '嘍', '了')):
+            return False
+        if any(line.startswith(w) for w in ('一起', '我想', '全都', '不要', '如果', '但是', '我們', '可以', '你知道', '請問')):
+            return False
+        chinese_chars = _chinese_chars(line)
+        return 1 <= len(chinese_chars) <= 6 and len(line) <= 10
+
     def _choice_layout_evidence(
         self,
         lines: List[str],
@@ -902,8 +931,11 @@ class OCRWorker:
             return False, 0, []
 
         evidence: List[str] = []
-        first_is_known_speaker = self._is_known_speaker(lines[0])
-        option_start = 1 if first_is_known_speaker and len(lines) >= 3 else 0
+        first_line = lines[0].strip()
+        is_speaker_candidate = self._is_speaker_name_candidate(first_line)
+        first_is_known_speaker = self._is_known_speaker(first_line)
+        
+        option_start = 1 if is_speaker_candidate and len(lines) >= 3 else 0
         option_lines = lines[option_start:]
         if len(option_lines) < 2:
             return False, 0, []
@@ -911,6 +943,11 @@ class OCRWorker:
         marker_count = sum(_strip_choice_marker(line)[1] for line in option_lines)
         if marker_count:
             evidence.append(f"choice-markers={marker_count}")
+
+        # If line 1 is a speaker candidate and there are no explicit choice markers in a 2-line detection,
+        # it is a speaker + dialogue pair, NOT a choice menu.
+        if is_speaker_candidate and len(lines) == 2 and not marker_count:
+            return False, 0, []
 
         boxes = (ocr_result.bounding_boxes if ocr_result else []) or []
         option_boxes = boxes[option_start:option_start + len(option_lines)]
@@ -936,13 +973,14 @@ class OCRWorker:
 
         if (
             len(option_lines) >= 3
-            and not first_is_known_speaker
+            and not is_speaker_candidate
             and all(_chinese_chars(line) for line in option_lines)
         ):
             evidence.append("three-or-more-unlabelled-chinese-lines")
 
         is_choice_layout = any(
-            reason.startswith(("choice-markers", "vertically-left-aligned", "three-or-more"))
+            reason.startswith("choice-markers")
+            or (reason.startswith("vertically-left-aligned") and not is_speaker_candidate)
             for reason in evidence
         )
         if first_is_known_speaker and option_start == 1:
@@ -953,6 +991,7 @@ class OCRWorker:
         self,
         text: str,
         ocr_result: Optional[OCRResult] = None,
+        allow_choices: Optional[bool] = None,
     ) -> ParsedTranslationInput:
         """Separate normal speaker dialogue from vertically stacked choices."""
         lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -963,10 +1002,21 @@ class OCRWorker:
                 evidence=["no-nonempty-lines"],
             )
 
-        is_choices, option_start, evidence = self._choice_layout_evidence(
-            lines,
-            ocr_result,
-        )
+        if allow_choices is None:
+            allow_choices = getattr(self, "allow_choices", True)
+
+        is_choices = False
+        option_start = 0
+        evidence: List[str] = []
+
+        if allow_choices:
+            is_choices, option_start, evidence = self._choice_layout_evidence(
+                lines,
+                ocr_result,
+            )
+        else:
+            evidence.append("choice-classification-disabled")
+
         if is_choices:
             speaker = lines[0] if option_start == 1 else ""
             choices = []
@@ -1405,9 +1455,12 @@ class OCRWorker:
                 required_stability = 0.35 if choice_layout else self.TEXT_STABILITY_DELAY
 
                 if normalized_new != normalized_candidate:
-                    # New candidate - start timer
+                    # New candidate - start timer (for high confidence, set timestamp in past for immediate translation)
                     self._candidate_text = ocr_result.text
-                    self._candidate_timestamp = current_time
+                    if ocr_result.confidence >= 0.85:
+                        self._candidate_timestamp = current_time - required_stability - 1.0
+                    else:
+                        self._candidate_timestamp = current_time
                     logger.info(
                         "pipeline_gate worker_id=%s frame=%s decision=candidate-start "
                         "text=%r normalized=%r confidence=%.3f lines=%s "
@@ -1440,8 +1493,9 @@ class OCRWorker:
                         required_stability=required_stability,
                         snapshot=snapshot,
                     )
-                    time.sleep(0.1)
-                    continue
+                    if ocr_result.confidence < 0.85:
+                        time.sleep(0.1)
+                        continue
 
                 # Same as candidate - check if stable long enough
                 elapsed = current_time - self._candidate_timestamp
@@ -1695,13 +1749,20 @@ class OCRWorker:
         
         h, w = image_bgr.shape[:2]
         
-        # Moderate upscaling for better text recognition (2000px balances speed and accuracy)
-        MAX_SIDE = 2000
+        # Resize image for optimal OCR speed & accuracy (max side 1280px for CPU inference)
+        TARGET_MAX_SIDE = 1280
+        MIN_SIDE = 900
         max_dim = max(w, h)
-        if max_dim < MAX_SIDE:
-            scale_factor = MAX_SIDE / max_dim
-            new_w = int(w * scale_factor)
-            new_h = int(h * scale_factor)
+        if max_dim > TARGET_MAX_SIDE:
+            scale_factor = TARGET_MAX_SIDE / max_dim
+            new_w = max(1, int(w * scale_factor))
+            new_h = max(1, int(h * scale_factor))
+            image_bgr = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            h, w = new_h, new_w
+        elif max_dim < MIN_SIDE and max_dim > 0:
+            scale_factor = MIN_SIDE / max_dim
+            new_w = max(1, int(w * scale_factor))
+            new_h = max(1, int(h * scale_factor))
             image_bgr = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             h, w = new_h, new_w
         

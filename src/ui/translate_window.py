@@ -280,6 +280,10 @@ class TranslateWindow(QMainWindow):
 
     def update_status(self, message: str) -> None:
         """Display OCR startup, ready, or failure state from the worker thread."""
+        current_english = self.english_label.text()
+        # Preserve active translations - don't overwrite with status or warning messages
+        if current_english and not current_english.startswith("Waiting for translation...") and not current_english.startswith("Preparing Chinese OCR"):
+            return
         QMetaObject.invokeMethod(
             self.english_label, "setText",
             Qt.ConnectionType.QueuedConnection,
@@ -396,31 +400,35 @@ class TranslateWindow(QMainWindow):
                 )
             dialogue_html = "".join(choice_blocks)
         elif chinese and pinyin_text:
+            lines = chinese.splitlines()
             pinyin_parts = pinyin_text.split()
-            pinyin_cells = []
-            char_cells = []
             pinyin_idx = 0
+            tables_html = []
             
-            for char in chinese:
-                if '\u4e00' <= char <= '\u9fff':  # Chinese character
-                    py = pinyin_parts[pinyin_idx] if pinyin_idx < len(pinyin_parts) else ''
-                    pinyin_idx += 1
-                    pinyin_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:13px; color:#7eb8c9; font-family:Consolas;">{py}</span></td>')
-                    char_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:24px; color:#c9a962; font-family:{CHINESE_HTML_FONT_FAMILY};">{char}</span></td>')
-                else:
-                    # Punctuation - empty pinyin cell, punctuation in char cell
-                    pinyin_cells.append(f'<td align="center" style="padding: 0 1px;"><span style="font-size:13px;">&nbsp;</span></td>')
-                    char_cells.append(f'<td align="center" style="padding: 0 1px;"><span style="font-size:24px; color:#c9a962;">{char}</span></td>')
-            
-            # Build table with 2 rows: pinyin on top, characters below
-            dialogue_html = (
-                f'<div style="padding: 10px 0;">'
-                f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;">'
-                f'<tr style="line-height:1.3;">{"".join(pinyin_cells)}</tr>'
-                f'<tr style="line-height:1.4;">{"".join(char_cells)}</tr>'
-                f'</table>'
-                f'</div>'
-            )
+            for line in lines:
+                if not line.strip():
+                    continue
+                pinyin_cells = []
+                char_cells = []
+                for char in line:
+                    if '\u4e00' <= char <= '\u9fff':  # Chinese character
+                        py = pinyin_parts[pinyin_idx] if pinyin_idx < len(pinyin_parts) else ''
+                        pinyin_idx += 1
+                        pinyin_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:13px; color:#7eb8c9; font-family:Consolas;">{py}</span></td>')
+                        char_cells.append(f'<td align="center" style="padding: 0 2px;"><span style="font-size:22px; color:#c9a962; font-family:{CHINESE_HTML_FONT_FAMILY}; font-weight:bold;">{char}</span></td>')
+                    else:
+                        pinyin_cells.append(f'<td align="center" style="padding: 0 1px;"><span style="font-size:13px;">&nbsp;</span></td>')
+                        char_cells.append(f'<td align="center" style="padding: 0 1px;"><span style="font-size:22px; color:#c9a962;">{char}</span></td>')
+                
+                tables_html.append(
+                    f'<div style="padding: 4px 0;">'
+                    f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;">'
+                    f'<tr style="line-height:1.3;">{"".join(pinyin_cells)}</tr>'
+                    f'<tr style="line-height:1.4;">{"".join(char_cells)}</tr>'
+                    f'</table>'
+                    f'</div>'
+                )
+            dialogue_html = "".join(tables_html)
         else:
             dialogue_html = f'<div style="color: #c9a962; font-size: 24px; font-family: {CHINESE_HTML_FONT_FAMILY}; padding: 10px 0;">{chinese or ""}</div>'
         

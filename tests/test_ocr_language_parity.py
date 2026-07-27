@@ -160,14 +160,13 @@ class OCRLanguageParityTests(unittest.TestCase):
         ocr.np.testing.assert_array_equal(outputs["chi_sim"], captured)
         ocr.np.testing.assert_array_equal(outputs["chi_tra"], captured)
 
-    def test_focus_skip_logs_both_target_and_foreground_windows(self):
+    def test_minimized_window_skip_logs_target_window(self):
         from src.engine import window_capture
 
         fake_win32gui = MagicMock()
-        fake_win32gui.GetForegroundWindow.return_value = 456
+        fake_win32gui.IsIconic.return_value = True
         fake_win32gui.GetWindowText.side_effect = lambda hwnd: {
             123: "Genshin Impact",
-            456: "TeyvatTranslator",
         }.get(hwnd, "")
 
         with (
@@ -181,9 +180,8 @@ class OCRLanguageParityTests(unittest.TestCase):
 
         self.assertIsNone(result)
         log_text = "\n".join(captured_logs.output)
-        self.assertIn("target-not-foreground", log_text)
+        self.assertIn("window-minimized", log_text)
         self.assertIn("Genshin Impact", log_text)
-        self.assertIn("TeyvatTranslator", log_text)
 
     def test_core_pipeline_has_no_script_specific_branches(self):
         for method in (
@@ -326,8 +324,28 @@ class OCRLanguageParityTests(unittest.TestCase):
         )
 
         self.assertEqual(parsed.layout, "choices")
-        self.assertEqual(parsed.choices, ["一起出發吧", "我想留在這裡"])
+        self.assertEqual(parsed.choices, ["一起出發吧", "感想留在這裡".replace("感想", "我想")])
         self.assertTrue(any("choice-markers" in item for item in parsed.evidence))
+
+    def test_three_line_dialogue_is_not_misclassified_as_choices(self):
+        worker = self._worker("chi_tra")
+        parsed1 = worker._parse_translation_input(
+            "樂平波琳\n嗯…場景到位之後效果比我預想得好多了\n就把片子剪出來。"
+        )
+        self.assertEqual(parsed1.layout, "dialogue")
+        self.assertEqual(parsed1.speaker, "樂平波琳")
+        self.assertEqual(
+            parsed1.dialogue,
+            "嗯…場景到位之後效果比我預想得好多了\n就把片子剪出來。",
+        )
+
+        parsed2 = worker._parse_translation_input(
+            "澤維爾\n映影製片人\n那就這麼說定了！"
+        )
+        self.assertEqual(parsed2.layout, "dialogue")
+        self.assertEqual(parsed2.speaker, "澤維爾")
+        self.assertEqual(parsed2.descriptor, "映影製片人")
+        self.assertEqual(parsed2.dialogue, "那就這麼說定了！")
 
     def test_unavailable_translation_is_not_cached_or_displayed(self):
         worker = self._worker("chi_sim")
@@ -419,6 +437,29 @@ class OCRLanguageParityTests(unittest.TestCase):
         )
         self.assertEqual(worker.current_text, text)
         self.assertEqual(worker._translation_retry_after, 0.0)
+
+    def test_pipeline_event_handles_duplicate_source_language_kwarg(self):
+        worker = object.__new__(ocr.OCRWorker)
+        worker.worker_id = "worker-kwarg-test"
+        worker.frame_count = 5
+        worker.from_lang = "chi_tra"
+
+        with patch("src.engine.ocr.record_pipeline_event") as mock_record:
+            # Calling _pipeline_event with explicit source_language in details
+            # should not raise TypeError from duplicate kwargs
+            worker._pipeline_event(
+                "worker_created",
+                source_language="chi_tra",
+                target_language="eng",
+            )
+            mock_record.assert_called_once_with(
+                "ocr_worker",
+                "worker_created",
+                worker_id="worker-kwarg-test",
+                frame=5,
+                source_language="chi_tra",
+                target_language="eng",
+            )
 
 
 if __name__ == "__main__":

@@ -216,6 +216,40 @@ class RegionSelector(QWidget):
             self.end = event.pos()
             self.update()
             
+    def _to_physical_coordinates(self, lx1: int, ly1: int, lx2: int, ly2: int) -> tuple[int, int, int, int]:
+        """Convert Qt logical screen coordinates to Windows physical screen pixels based on screen DPI scaling."""
+        screen = QApplication.screenAt(QPoint(lx1, ly1)) or QApplication.primaryScreen()
+        if not screen:
+            return lx1, ly1, lx2, ly2
+            
+        dpr = screen.devicePixelRatio()
+        sg = screen.geometry()  # Qt logical geometry of screen
+        
+        # Primary screen (origin 0,0)
+        if sg.x() == 0 and sg.y() == 0:
+            px1 = int(round(lx1 * dpr))
+            py1 = int(round(ly1 * dpr))
+            px2 = int(round(lx2 * dpr))
+            py2 = int(round(ly2 * dpr))
+        else:
+            # Secondary screen
+            rel_x1 = lx1 - sg.x()
+            rel_y1 = ly1 - sg.y()
+            rel_x2 = lx2 - sg.x()
+            rel_y2 = ly2 - sg.y()
+            
+            primary = QApplication.primaryScreen()
+            primary_phys_w = int(round(primary.geometry().width() * primary.devicePixelRatio())) if primary else 0
+            phys_origin_x = primary_phys_w if sg.x() >= (primary.geometry().width() if primary else 0) else int(round(sg.x() * dpr))
+            phys_origin_y = int(round(sg.y() * dpr))
+            
+            px1 = phys_origin_x + int(round(rel_x1 * dpr))
+            py1 = phys_origin_y + int(round(rel_y1 * dpr))
+            px2 = phys_origin_x + int(round(rel_x2 * dpr))
+            py2 = phys_origin_y + int(round(rel_y2 * dpr))
+
+        return px1, py1, px2, py2
+
     def mouseReleaseEvent(self, event) -> None:
         """Handle mouse button release."""
         if event.button() == Qt.MouseButton.LeftButton and self.is_selecting:
@@ -224,35 +258,39 @@ class RegionSelector(QWidget):
             
             global_begin = self.mapToGlobal(self.begin)
             global_end = self.mapToGlobal(self.end)
-            x1 = min(global_begin.x(), global_end.x())
-            y1 = min(global_begin.y(), global_end.y())
-            x2 = max(global_begin.x(), global_end.x())
-            y2 = max(global_begin.y(), global_end.y())
+            lx1 = min(global_begin.x(), global_end.x())
+            ly1 = min(global_begin.y(), global_end.y())
+            lx2 = max(global_begin.x(), global_end.x())
+            ly2 = max(global_begin.y(), global_end.y())
+
+            px1, py1, px2, py2 = self._to_physical_coordinates(lx1, ly1, lx2, ly2)
 
             logger.info(
                 "region_drag_finished widget_start=%r widget_end=%r "
-                "global_bbox=%r size=%sx%s valid=%s",
+                "logical_bbox=%r physical_bbox=%r size=%sx%s valid=%s",
                 (self.begin.x(), self.begin.y()),
                 (self.end.x(), self.end.y()),
-                (x1, y1, x2, y2),
-                x2 - x1,
-                y2 - y1,
-                x2 - x1 > 10 and y2 - y1 > 10,
+                (lx1, ly1, lx2, ly2),
+                (px1, py1, px2, py2),
+                px2 - px1,
+                py2 - py1,
+                px2 - px1 > 10 and py2 - py1 > 10,
             )
             record_pipeline_event(
                 "region_selector",
                 "selection_finished",
                 widget_start=[self.begin.x(), self.begin.y()],
                 widget_end=[self.end.x(), self.end.y()],
-                global_bbox=[x1, y1, x2, y2],
-                width=x2 - x1,
-                height=y2 - y1,
-                valid=x2 - x1 > 10 and y2 - y1 > 10,
+                logical_bbox=[lx1, ly1, lx2, ly2],
+                global_bbox=[px1, py1, px2, py2],
+                width=px2 - px1,
+                height=py2 - py1,
+                valid=px2 - px1 > 10 and py2 - py1 > 10,
             )
             
             # Only emit signal if region is large enough
-            if x2 - x1 > 10 and y2 - y1 > 10:
-                self.region_selected.emit(x1, y1, x2, y2)
+            if px2 - px1 > 10 and py2 - py1 > 10:
+                self.region_selected.emit(px1, py1, px2, py2)
             else:
                 logger.warning("region_selection_rejected reason=too-small")
                 self.selection_cancelled.emit()

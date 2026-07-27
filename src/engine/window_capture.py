@@ -208,16 +208,12 @@ def capture_window_dialogue(hwnd: int) -> Optional[np.ndarray]:
         return None
     
     try:
-        # Check if target window is the foreground window
-        foreground_hwnd = win32gui.GetForegroundWindow()
-        if foreground_hwnd != hwnd:
-            # Target window is not in focus - skip capture
+        # Check if target window is minimized
+        if win32gui.IsIconic(hwnd):
             _log_dialogue_capture_state(
-                "target-not-foreground",
+                "window-minimized",
                 target_hwnd=hwnd,
                 target_title=_window_title(hwnd),
-                foreground_hwnd=foreground_hwnd,
-                foreground_title=_window_title(foreground_hwnd),
             )
             return None
         

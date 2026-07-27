@@ -11,9 +11,12 @@ import logging
 import time
 from typing import Optional
 from threading import Thread, Lock
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 # Configure logging
 logger = logging.getLogger("Translator")
+
+TRANSLATION_UNAVAILABLE = "[Translation unavailable]"
 
 # =============================================================================
 # MARIANMT SETUP
@@ -144,17 +147,31 @@ def _translate_marian(text: str) -> Optional[str]:
         return None
     
     try:
+        import torch
+        # Optimize CPU threads for PyTorch matrix operations
+        try:
+            if torch.get_num_threads() < 4:
+                torch.set_num_threads(min(4, os.cpu_count() or 4))
+        except Exception:
+            pass
+
         started = time.perf_counter()
-        # Tokenize and translate
-        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-        
-        # Move to same device as model
-        if next(model.parameters()).is_cuda:
-            inputs = {k: v.cuda() for k, v in inputs.items()}
-        
-        # Generate translation
-        translated_ids = model.generate(**inputs, max_length=512)
-        result = tokenizer.decode(translated_ids[0], skip_special_tokens=True)
+        with torch.no_grad():
+            # Tokenize and translate
+            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+            
+            # Move to same device as model
+            if next(model.parameters()).is_cuda:
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+            
+            # Generate translation with repetition penalty and max_new_tokens to prevent 27s generation loops
+            translated_ids = model.generate(
+                **inputs,
+                max_new_tokens=80,
+                repetition_penalty=1.2,
+                no_repeat_ngram_size=3,
+            )
+            result = tokenizer.decode(translated_ids[0], skip_special_tokens=True)
         
         logger.info(
             "marian_translation_completed elapsed_ms=%.1f input_chars=%s output_chars=%s",
@@ -169,25 +186,58 @@ def _translate_marian(text: str) -> Optional[str]:
         return None
 
 
-def _translate_google(text: str, target: str = 'en') -> Optional[str]:
+def is_valid_english_translation(input_text: str, result_text: Optional[str]) -> bool:
+    """Validate that a translation output is non-empty, non-identical to input, not untranslated Chinese, and not a repetitive loop."""
+    if not result_text or not result_text.strip():
+        return False
+    clean_result = result_text.strip()
+    clean_input = input_text.strip()
+    if clean_result == clean_input or clean_result in (TRANSLATION_UNAVAILABLE, "[Translation unavailable]"):
+        return False
+    # If the output consists mostly of Chinese characters, it is untranslated
+    chinese_count = sum(1 for c in clean_result if '\u4e00' <= c <= '\u9fff')
+    if chinese_count > len(clean_result) * 0.3:
+        return False
+    # Check for repetitive word hallucination loops (e.g. "Wait, wait, wait, wait...")
+    import re
+    if re.search(r'(\b\w+\b)(?:\s*,\s*\1){3,}', clean_result, re.IGNORECASE):
+        logger.warning(f"Translation rejected due to repetitive word loop: {clean_result!r}")
+        return False
+    return True
+
+
+def _translate_google(text: str, target: str = 'en', source: str = 'auto') -> Optional[str]:
     """Translate using Google Translate API (fallback)."""
     if not GOOGLE_AVAILABLE:
         return None
     
     try:
         started = time.perf_counter()
-        translator = GoogleTranslator(source='auto', target=target)
-        result = translator.translate(text)
-        logger.info(
-            "google_translation_completed elapsed_ms=%.1f input_chars=%s output_chars=%s",
-            (time.perf_counter() - started) * 1000,
-            len(text),
-            len(result or ""),
-        )
-        return result
+        # Try explicit Chinese source languages before falling back to auto
+        sources_to_try = [source] if source != 'auto' else ['zh-TW', 'zh-CN', 'zh', 'auto']
+        for src in sources_to_try:
+            try:
+                translator = GoogleTranslator(source=src, target=target)
+                result = translator.translate(text)
+                if is_valid_english_translation(text, result):
+                    logger.info(
+                        "google_translation_completed elapsed_ms=%.1f input_chars=%s output_chars=%s src=%s",
+                        (time.perf_counter() - started) * 1000,
+                        len(text),
+                        len(result or ""),
+                        src,
+                    )
+                    return result
+            except Exception as google_err:
+                logger.debug(f"Google Translate with src={src} failed: {google_err}")
+                continue
+        return None
     except Exception as e:
         logger.exception("Google Translate error: %s", e)
         return None
+
+
+_marian_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="MarianMTWorker")
 
 
 class Translator:
@@ -199,16 +249,34 @@ class Translator:
         result = translator.translate("你好世界")
     """
     
-    def __init__(self, target_lang: str = 'en'):
+    def __init__(self, from_lang: str = "chi_tra", target_lang: str = "en") -> None:
+        """
+        Initialize the translator.
+        
+        Args:
+            from_lang: Source language code ('chi_tra' or 'chi_sim')
+            target_lang: Target language code ('en' or 'eng')
+        """
+        self.from_lang = from_lang
         self.target_lang = target_lang
         self._google_translator = None
         
-        # Reusable Google translator instance
         if GOOGLE_AVAILABLE:
             try:
-                self._google_translator = GoogleTranslator(source='auto', target=target_lang)
-            except Exception:
-                pass
+                # Map source language to Google Translate language codes
+                google_src = "zh-TW" if "tra" in from_lang else "zh-CN"
+                self._google_translator = GoogleTranslator(source=google_src, target=target_lang)
+            except Exception as e:
+                logger.warning("Failed to initialize GoogleTranslator: %s", e)
+    
+    @property
+    def backend(self) -> str:
+        """Returns name of current active backend."""
+        if MARIAN_AVAILABLE and _marian_ready:
+            return "MarianMT"
+        elif self._google_translator or GOOGLE_AVAILABLE:
+            return "Google Translate"
+        return "None"
     
     def translate(self, text: str, marian_text: Optional[str] = None) -> str:
         """
@@ -238,19 +306,30 @@ class Translator:
             text,
         )
         
-        # Try MarianMT first (fast, offline)
+        # Try MarianMT first (fast, offline) with a 1.5s timeout on global thread pool
         if MARIAN_AVAILABLE and _marian_ready:
-            result = _translate_marian(offline_text)
-            if result:
-                logger.debug(f"MarianMT: {text[:20]}... → {result[:30]}...")
-                return result
+            from concurrent.futures import TimeoutError
+            try:
+                future = _marian_executor.submit(_translate_marian, offline_text)
+                result = future.result(timeout=1.5)
+                if is_valid_english_translation(text, result):
+                    logger.debug(f"MarianMT: {text[:20]}... → {result[:30]}...")
+                    return result
+                logger.warning("MarianMT result invalid or untranslated: %r", result)
+            except TimeoutError:
+                logger.warning(
+                    "MarianMT inference timed out (>1.5s) for text=%r; falling back immediately to fast Google Translate",
+                    text[:30],
+                )
+            except Exception as e:
+                logger.exception("MarianMT translation submission error: %s", e)
         
         # Fallback to Google Translate
         if self._google_translator:
             try:
                 started = time.perf_counter()
                 result = self._google_translator.translate(text)
-                if result:
+                if is_valid_english_translation(text, result):
                     logger.info(
                         "google_fallback_completed elapsed_ms=%.1f "
                         "input_chars=%s output_chars=%s",
@@ -262,9 +341,10 @@ class Translator:
             except Exception as e:
                 logger.exception("Google fallback failed: %s", e)
         
-        # Last resort: try fresh Google instance
-        result = _translate_google(text, self.target_lang)
-        if result:
+        # Last resort: try fresh Google instance with explicit source languages
+        google_src = "zh-TW" if "tra" in self.from_lang else "zh-CN"
+        result = _translate_google(text, self.target_lang, source=google_src)
+        if is_valid_english_translation(text, result):
             return result
         
         logger.error("All translation backends failed for text=%r", text)
@@ -274,7 +354,6 @@ class Translator:
     def is_offline_capable(self) -> bool:
         """Returns True if MarianMT is ready for offline translation."""
         return MARIAN_AVAILABLE and _marian_ready
-    
     @property
     def backend(self) -> str:
         """Returns the current active backend name."""
