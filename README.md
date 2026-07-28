@@ -101,7 +101,7 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) (free).
 python build.py --clean --installer
 ```
 
-Output: `dist/TeyvatTranslator-v1.1.3-Setup.exe`
+Output: `dist/TeyvatTranslator-v1.5.0-Setup.exe`
 
 </details>
 

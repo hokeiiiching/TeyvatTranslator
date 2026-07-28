@@ -614,7 +614,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(name)
         
         # Version
-        version = QLabel("v1.1.3")
+        version = QLabel("v1.5.0")
         version.setObjectName("subtitle")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)

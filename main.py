@@ -9,7 +9,7 @@ capture, intelligent vocabulary matching, and enhanced translation display.
 
 Author: hokeiiiching
 License: MIT
-Version: 1.1.3
+Version: 1.5.0
 """
 
 import os
@@ -55,7 +55,7 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.5.0"
 
 # Configure diagnostics before importing the UI and OCR stack so startup/model
 # failures are captured as well as steady-state translation activity.
@@ -147,7 +147,7 @@ def main() -> None:
     # Create application instance
     app = QApplication(sys.argv)
     app.setApplicationName("Genshin Translator")
-    app.setApplicationVersion("1.1.3")
+    app.setApplicationVersion("1.5.0")
     app.setOrganizationName("GenshinTranslator")
     
     # Start OCR pre-initialization in background (reduces wait time on first translation)
